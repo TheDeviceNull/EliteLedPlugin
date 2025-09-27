@@ -9,6 +9,7 @@ A Covas:Next plugin to control Tuya-compatible LED strips based on Elite Dangero
 2. Ensure the `deps/` folder contains `tinytuya` if not installed globally.
 3. Restart Covas:Next and enable the plugin via the Plugins UI.
 
+
 ## Usage
 
 Configure your Tuya device in the plugin settings UI:
@@ -16,6 +17,20 @@ Configure your Tuya device in the plugin settings UI:
 - Device IP
 - Local Key
 - Device Version (usually 3.3)
+
+### Standalone Device Test
+
+You can test your Tuya LED device directly using the script `test tinytuya.py`:
+
+```bash
+python "test tinytuya.py"
+```
+The script will prompt for Device ID, IP, Local Key, and Device Version (default 3.3). It will:
+- Connect to the device
+- Test ON/OFF
+- Set the color to RED (if supported)
+
+You can press Enter to use the default values shown in the prompts.
 
 ## Development
 
