@@ -82,7 +82,7 @@ MIT
   1. Check IP address and Device ID.
   2. Ensure the local key is correct.
   3. Verify that no firewall blocks the connection.
-  4. Use the test script provided in the plugin folder (`test_tuya_connection.py`) to verify connectivity.
+  4. Use the test script provided in the plugin folder (`test tinytuya.py`) to verify connectivity.
 
 ## License
 
