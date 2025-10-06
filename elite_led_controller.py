@@ -122,3 +122,4 @@ def set_led(color: str, speed: str = "normal") -> bool:
     except Exception as e:
         log("error", f"Error setting {color}: {e}")
         return False
+
