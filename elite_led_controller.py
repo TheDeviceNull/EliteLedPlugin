@@ -123,8 +123,3 @@ def set_led(color: str, speed: str = "normal") -> bool:
         log("error", f"Error setting {color}: {e}")
         return False
 
-# === Configurazione dispositivo Tuya ===
-#DEVICE_ID = "bfd30f67649c2e0f51sv02"
-#DEVICE_IP = "192.168.1.204"
-#LOCAL_KEY = "422459661314fdf1"
-#DEVICE_VER = 3.2
