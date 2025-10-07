@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from lib.PluginHelper import PluginHelper, PluginManifest
 from lib.PluginBase import PluginBase
-from lib.PluginSettingDefinitions import PluginSettings, SettingsGrid, TextSetting, ParagraphSetting
+from lib.PluginSettingDefinitions import PluginSettings, SettingsGrid, TextSetting, ParagraphSetting, SelectSetting, SelectOption
 from lib.Event import Event, ProjectedEvent
 from lib.EventManager import Projection
 from lib.Logger import log
@@ -17,6 +17,13 @@ from lib.Event import GameEvent
 sys.path.append(str(Path(__file__).parent / "deps"))
 
 import tinytuya  # ensure tinytuya can be imported when bundled
+
+
+# Color options for the dropdowns
+color_options = [
+    {"key": c, "label": c.capitalize(), "value": c, "disabled": False}
+    for c in led.COLORS.keys()
+]
 
 # === Custom LED Event ===
 @dataclass
@@ -67,15 +74,7 @@ class GameEventToLEDProjection(Projection[dict[str, Any]]):
                     "speed": speed
                 }))
         return projected
-# === Elite Dangerous Events → LED Mapping ===
-EVENT_LED_MAP = {
-    "LoadGame": ("green", "normal"),
-    "UnderAttack": ("red_alert", "fast"),
-    "HullDamage": ("orange_alert", "normal"),
-    "FSDJump": ("blue", "normal"),
-    "Docked": ("white", "normal"),
-    "Friends": ("cyan", "normal"),
-}
+
 
 # === Main Plugin Class ===
 class EliteLEDPlugin(PluginBase):
@@ -140,10 +139,75 @@ class EliteLEDPlugin(PluginBase):
                             default_value="3.3"
                         ),
                     ]
-                )
+                ),              
+                SettingsGrid(
+                    key="event_colors",
+                    label="Event LED Colors",
+                    fields=[
+                        SelectSetting(
+                            key="FSDJump",
+                            label="FSDJump Color",
+                            type="select",
+                            default_value="fsd_jump",
+                            select_options=color_options,
+                            multi_select=False,
+                            readonly=False,
+                            placeholder=""
+                        ),
+                        SelectSetting(
+                            key="DockingGranted",
+                            label="DockingGranted Color",
+                            type="select",
+                            default_value="white",
+                            select_options=color_options,
+                            multi_select=False,
+                            readonly=False,
+                            placeholder=""
+                        ),
+                        SelectSetting(
+                            key="Undocked",
+                            label="Undocked Color",
+                            type="select",
+                            default_value="yellow",
+                            select_options=color_options,
+                            multi_select=False,
+                            readonly=False,
+                            placeholder=""
+                        ),
+                        SelectSetting(
+                            key="UnderAttack",
+                            label="UnderAttack Color",
+                            type="select",
+                            default_value="red_alert",
+                            select_options=color_options,
+                            multi_select=False,
+                            readonly=False,
+                            placeholder=""
+                        ),
+                        SelectSetting(
+                            key="Cargo",
+                            label="Cargo Color",
+                            type="select",
+                            default_value="purple",
+                            select_options=color_options,
+                            multi_select=False,
+                            readonly=False,
+                            placeholder=""
+                        ),
+                        SelectSetting(
+                            key="FuelScoop",
+                            label="FuelScoop Color",
+                            type="select",
+                            default_value="breathing_yellow",
+                            select_options=color_options,
+                            multi_select=False,
+                            readonly=False,
+                            placeholder=""
+                        ),
+                    ]   
+                )   
             ]
         )
-
     # === Called when plugin helper is ready: configure LED device dynamically ===
     @override
     def on_plugin_helper_ready(self, helper: PluginHelper):
@@ -161,6 +225,29 @@ class EliteLEDPlugin(PluginBase):
         # Configure elite_led_controller with user-provided settings
         led.configure(device_id=device_id, device_ip=device_ip, local_key=local_key, device_ver=device_ver)
         log("debug", f"[EliteLEDPlugin] Tuya device configured: ID={device_id}, IP={device_ip}, Ver={device_ver}")
+
+        event_colors = {
+            "FSDJump": helper.get_plugin_setting("EliteLEDController", "event_colors", "FSDJump") or "fsd_jump",
+            "DockingGranted": helper.get_plugin_setting("EliteLEDController", "event_colors", "DockingGranted") or "white",
+            "Undocked": helper.get_plugin_setting("EliteLEDController", "event_colors", "Undocked") or "yellow",
+            "UnderAttack": helper.get_plugin_setting("EliteLEDController", "event_colors", "UnderAttack") or "red_alert",
+            "Cargo": helper.get_plugin_setting("EliteLEDController", "event_colors", "Cargo") or "purple",
+            "FuelScoop": helper.get_plugin_setting("EliteLEDController", "event_colors", "FuelScoop") or "breathing_yellow",
+        }
+
+        # === Elite Dangerous Events → LED Mapping ===
+        global EVENT_LED_MAP
+        EVENT_LED_MAP = {
+           "LoadGame": ("green", "normal"),  # fisso
+            "UnderAttack": (event_colors["UnderAttack"], "fast"),
+            "HullDamage": ("orange_alert", "normal"),  # fisso
+            "FSDJump": (event_colors["FSDJump"], "normal"),
+            "Docked": (event_colors["DockingGranted"], "normal"),
+            "Friends": ("cyan", "normal"),  # fisso
+            "Cargo": (event_colors["Cargo"], "normal"),
+            "FuelScoop": (event_colors["FuelScoop"], "normal"),
+            "Undocked": (event_colors["Undocked"], "normal"),
+        }
 
     # === Action to set LED manually ===
     def register_actions(self, helper: PluginHelper):
