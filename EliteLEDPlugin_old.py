@@ -10,8 +10,6 @@ from lib.Logger import log
 from . import elite_led_controller as led
 import sys
 from pathlib import Path
-from lib.Event import GameEvent
-
 
 # Add deps/ folder to sys.path (in case dependencies are vendored inside the plugin)
 sys.path.append(str(Path(__file__).parent / "deps"))
@@ -50,23 +48,7 @@ class CurrentLEDState(Projection[dict[str, Any]]):
                 "speed": event.speed
             }))
         return projected
-# === Game Event to Led Projection ===
-class GameEventToLEDProjection(Projection[dict[str, Any]]):
-    def get_default_state(self) -> dict[str, Any]:
-        return {"last_event": None}
 
-    def process(self, event: Event) -> list[ProjectedEvent]:
-        projected: list[ProjectedEvent] = []
-        if hasattr(event, "event"):
-            evt_name = getattr(event, "event")
-            if evt_name in EVENT_LED_MAP:
-                color, speed = EVENT_LED_MAP[evt_name]
-                projected.append(ProjectedEvent({
-                    "event": "LEDChanged",
-                    "new_color": color,
-                    "speed": speed
-                }))
-        return projected
 # === Elite Dangerous Events → LED Mapping ===
 EVENT_LED_MAP = {
     "LoadGame": ("green", "normal"),
@@ -74,7 +56,6 @@ EVENT_LED_MAP = {
     "HullDamage": ("orange_alert", "normal"),
     "FSDJump": ("blue", "normal"),
     "Docked": ("white", "normal"),
-    "Friends": ("cyan", "normal"),
 }
 
 # === Main Plugin Class ===
@@ -181,7 +162,6 @@ class EliteLEDPlugin(PluginBase):
 
     def register_projections(self, helper: PluginHelper):
         helper.register_projection(CurrentLEDState())
-        helper.register_projection(GameEventToLEDProjection())
 
     def register_status_generators(self, helper: PluginHelper):
         helper.register_status_generator(
@@ -191,58 +171,26 @@ class EliteLEDPlugin(PluginBase):
     def register_should_reply_handlers(self, helper: PluginHelper):
         helper.register_should_reply_handler(lambda event, states: self.handle_game_event(helper, event, states))
 
-    def register_sideeffects(self, helper: PluginHelper):
-        def apply_led_from_projection(event: Event, states: dict[str, dict]):
-            if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged":
-                color = event.content.get("new_color")
-                speed = event.content.get("speed", "normal")
-                self._apply_led(color, speed, helper, states)
-        helper.register_sideeffect(apply_led_from_projection)
-# Also react to game or conversational events directly
-        helper.register_sideeffect(lambda event, states: self.handle_game_event(helper, event, states))
-
-
     def set_led(self, args: dict[str, Any], states: dict[str, dict], helper: PluginHelper) -> str:
         color = args["color"]
         speed = args.get("speed", "normal")
-        return self._apply_led(color, speed, helper, states)
+        return self._apply_led(color, speed, helper)
 
     def handle_game_event(self, helper: PluginHelper, event: Event, states: dict[str, dict]) -> bool | None:
-        if not isinstance(event, GameEvent):
-            return None  # Ignore non-game events
-        event_name = None
-#        log("debug", f"[EliteLEDPlugin] Game event '{event}'")
-        # Extract event name from GameEvent content
-        if hasattr(event, "content") and isinstance(event.content, dict):
-            event_name = event.content.get("event")
-        # Fallback for text-based events (e.g. ConversationEvent)
-        elif hasattr(event, "content") and isinstance(event.content, str):
-            text = event.content.strip().lower()
-            for key in EVENT_LED_MAP:
-                if key.lower() in text:
-                    event_name = key
-                    break
-        if event_name and event_name in EVENT_LED_MAP:
-            color, speed = EVENT_LED_MAP[event_name]
-            log("debug", f"[EliteLEDPlugin] Game event '{event_name}' → LED '{color}'")
-            self._apply_led(color, speed, helper, states)
+        if hasattr(event, "event"):
+            evt_name = getattr(event, "event")
+            if evt_name in EVENT_LED_MAP:
+                color, speed = EVENT_LED_MAP[evt_name]
+                log("debug", f"[EliteLEDPlugin] Game event {evt_name} → LED {color}")
+                self._apply_led(color, speed, helper)
         return None
 
-
-    def _apply_led(self, color: str, speed: str, helper: PluginHelper, states: dict[str, dict]) -> str:
-      # Use the projected state passed to the method
-      current_state = states.get("CurrentLEDState", {})
-
-      # Avoid redundant LED updates
-      if current_state.get("color") == color and current_state.get("speed") == speed:
-         log("debug", f"LED already set to {color} (speed={speed}), skipping.")
-         return None
-
-      success = led.set_led(color, speed)
-      if success:
-         helper.put_incoming_event(LEDChangedEvent(new_color=color, speed=speed))
-         log("debug", f"LED set to {color}")
-         return None
-      else:
-         log("error", f"Error setting LED to {color}")
-         return None
+    def _apply_led(self, color: str, speed: str, helper: PluginHelper) -> str:
+        success = led.set_led(color, speed)
+        if success:
+            helper.put_incoming_event(LEDChangedEvent(new_color=color, speed=speed))
+            log("debug", f"LED set to {color}" )
+            return None
+        else:
+            log("error", f"Error setting LED to {color}")
+            return None
