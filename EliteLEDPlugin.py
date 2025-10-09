@@ -185,10 +185,10 @@ class EliteLEDPlugin(PluginBase):
                             placeholder=""
                         ),
                         SelectSetting(
-                            key="Cargo",
-                            label="Cargo Color",
+                            key="Docked",
+                            label="Docked Color",
                             type="select",
-                            default_value="purple",
+                            default_value="white",
                             select_options=color_options,
                             multi_select=False,
                             readonly=False,
@@ -231,7 +231,7 @@ class EliteLEDPlugin(PluginBase):
             "DockingGranted": helper.get_plugin_setting("EliteLEDController", "event_colors", "DockingGranted") or "white",
             "Undocked": helper.get_plugin_setting("EliteLEDController", "event_colors", "Undocked") or "yellow",
             "UnderAttack": helper.get_plugin_setting("EliteLEDController", "event_colors", "UnderAttack") or "red_alert",
-            "Cargo": helper.get_plugin_setting("EliteLEDController", "event_colors", "Cargo") or "purple",
+            "Docked": helper.get_plugin_setting("EliteLEDController", "event_colors", "Docked") or "white",
             "FuelScoop": helper.get_plugin_setting("EliteLEDController", "event_colors", "FuelScoop") or "breathing_yellow",
         }
 
@@ -241,8 +241,8 @@ class EliteLEDPlugin(PluginBase):
             "LoadGame": ("white", "normal"),  # led reset to white on game load
             "UnderAttack": (event_colors["UnderAttack"], "fast"),
             "FSDJump": (event_colors["FSDJump"], "normal"),
-            "Docked": (event_colors["DockingGranted"], "normal"),
-            "Cargo": (event_colors["Cargo"], "normal"),
+            "DockingGranted": (event_colors["DockingGranted"], "normal"),
+            "Docked": (event_colors["Docked"], "normal"),
             "FuelScoop": (event_colors["FuelScoop"], "normal"),
             "Undocked": (event_colors["Undocked"], "normal"),
         }
@@ -290,7 +290,12 @@ class EliteLEDPlugin(PluginBase):
     def set_led(self, args: dict[str, Any], states: dict[str, dict], helper: PluginHelper) -> str:
         color = args["color"]
         speed = args.get("speed", "normal")
-        return self._apply_led(color, speed, helper, states)
+        try:
+            self._apply_led(color, speed, helper, states)
+            return "LED set successfully."
+        except Exception as e:
+            log("error", f"[EliteLEDPlugin] Exception setting LED: {e}")
+            return f"Error setting LED: {e}"
 
     def handle_game_event(self, helper: PluginHelper, event: Event, states: dict[str, dict]) -> bool | None:
         if not isinstance(event, GameEvent):
@@ -301,16 +306,21 @@ class EliteLEDPlugin(PluginBase):
         if hasattr(event, "content") and isinstance(event.content, dict):
             event_name = event.content.get("event")
         # Fallback for text-based events (e.g. ConversationEvent)
-        elif hasattr(event, "content") and isinstance(event.content, str):
-            text = event.content.strip().lower()
-            for key in EVENT_LED_MAP:
-                if key.lower() in text:
-                    event_name = key
-                    break
+#        elif hasattr(event, "content") and isinstance(event.content, str):
+#            text = event.content.strip().lower()
+#            for key in EVENT_LED_MAP:
+#                if key.lower() in text:
+#                    event_name = key
+#                    break
         if event_name and event_name in EVENT_LED_MAP:
             color, speed = EVENT_LED_MAP[event_name]
-            log("debug", f"[EliteLEDPlugin] Game event '{event_name}' → LED '{color}'")
-            self._apply_led(color, speed, helper, states)
+            log("debug", f"[EliteLEDPlugin] Game event '{event_name}' with LED '{color}'")
+            try:
+                self._apply_led(color, speed, helper, states)
+                return None
+            except Exception as e:
+                log("error", f"[EliteLEDPlugin] Exception setting LED for event '{event_name}': {e}")
+                return None
         return None
 
 
@@ -320,14 +330,17 @@ class EliteLEDPlugin(PluginBase):
 
       # Avoid redundant LED updates
       if current_state.get("color") == color and current_state.get("speed") == speed:
-         log("debug", f"LED already set to {color} (speed={speed}), skipping.")
+         log("debug", f"[EliteLEDPlugin] LED already set to {color} (speed={speed}), skipping.")
          return None
-
-      success = led.set_led(color, speed)
+      try:
+         success = led.set_led(color, speed)
+      except Exception as e:
+         log("error", f"[EliteLEDPlugin] Exception setting LED: {e}")
+         return None 
       if success:
          helper.put_incoming_event(LEDChangedEvent(new_color=color, speed=speed))
-         log("debug", f"LED set to {color}")
+         log("debug", f"[EliteLEDPlugin] LED set to {color}")
          return None
       else:
-         log("error", f"Error setting LED to {color}")
+         log("error", f"[EliteLEDPlugin] Error setting LED to {color}")
          return None

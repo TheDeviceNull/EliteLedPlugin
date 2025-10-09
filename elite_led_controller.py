@@ -1,12 +1,16 @@
 import tinytuya
 import time
 import logging
+import socket
 from lib.Logger import log
 
 
 # Disable noisy tinytuya logging
 logging.getLogger("tinytuya").setLevel(logging.CRITICAL)
 tinytuya.set_debug(False)
+
+# === Set a timeout for socket operations ===
+socket.setdefaulttimeout(2)
 
 # === Configure Tuya device settings from plugin ===
 def configure(device_id: str, device_ip: str, local_key: str, device_ver: float = 3.3):
@@ -66,7 +70,7 @@ def init_device():
         d.set_socketPersistent(True)
         return d
     except Exception as e:
-        log("error", f"Error connecting to LED device: {e}")
+        log("error", f"[EliteLEDPlugin] Error connecting to LED device: {e}")
         return None
 
 # === Set LED color or scene ===
@@ -74,6 +78,7 @@ def set_led(color: str, speed: str = "normal") -> bool:
     """Set the LED strip to a color or scene"""
     d = init_device()
     if not d:
+        log("error", "[EliteLEDPlugin] LED device not initialized, skipping LED setting.")
         return False
 
     try:
@@ -120,6 +125,6 @@ def set_led(color: str, speed: str = "normal") -> bool:
                 return True
             return False
     except Exception as e:
-        log("error", f"Error setting {color}: {e}")
+        log("error", f"[EliteLEDPlugin] Error setting {color}: {e}")
         return False
 
