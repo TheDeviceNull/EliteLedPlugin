@@ -238,12 +238,10 @@ class EliteLEDPlugin(PluginBase):
         # === Elite Dangerous Events → LED Mapping ===
         global EVENT_LED_MAP
         EVENT_LED_MAP = {
-           "LoadGame": ("green", "normal"),  # fisso
+            "LoadGame": ("white", "normal"),  # led reset to white on game load
             "UnderAttack": (event_colors["UnderAttack"], "fast"),
-            "HullDamage": ("orange_alert", "normal"),  # fisso
             "FSDJump": (event_colors["FSDJump"], "normal"),
             "Docked": (event_colors["DockingGranted"], "normal"),
-            "Friends": ("cyan", "normal"),  # fisso
             "Cargo": (event_colors["Cargo"], "normal"),
             "FuelScoop": (event_colors["FuelScoop"], "normal"),
             "Undocked": (event_colors["Undocked"], "normal"),
