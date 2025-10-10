@@ -34,6 +34,8 @@ class LEDChangedEvent(Event):
     kind: Literal['tool'] = 'tool'
     processed_at: float = field(default=0.0)
     text: list[str] = field(default_factory=list)
+    memorized_at: str = None # to be set when event is memorized by the COVAS:NEXT system
+    responded_at: str = None # to be set when event is responded to by the COVAS:NEXT system
 
     def __post_init__(self):
         self.text = [f"LED changed to {self.new_color} (speed={self.speed})"]
@@ -293,13 +295,20 @@ class EliteLEDPlugin(PluginBase):
         try:
             self._apply_led(color, speed, helper, states)
             return "LED set successfully."
+        except socket.timeout:
+            log("error", "[EliteLEDPlugin] Timeout while communicating with LED device.")
+            return False
         except Exception as e:
             log("error", f"[EliteLEDPlugin] Exception setting LED: {e}")
             return f"Error setting LED: {e}"
 
     def handle_game_event(self, helper: PluginHelper, event: Event, states: dict[str, dict]) -> bool | None:
         if not isinstance(event, GameEvent):
-            return None  # Ignore non-game events
+            return None  # Ignore non-game events      
+        # Ignore projected LEDChanged events to avoid loops
+        if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged": 
+            return None
+
         event_name = None
 #        log("debug", f"[EliteLEDPlugin] Game event '{event}'")
         # Extract event name from GameEvent content
@@ -317,7 +326,10 @@ class EliteLEDPlugin(PluginBase):
             log("debug", f"[EliteLEDPlugin] Game event '{event_name}' with LED '{color}'")
             try:
                 self._apply_led(color, speed, helper, states)
-                return None
+                return None          
+            except socket.timeout:
+                log("error", "[EliteLEDPlugin] Timeout while communicating with LED device.")
+                return False
             except Exception as e:
                 log("error", f"[EliteLEDPlugin] Exception setting LED for event '{event_name}': {e}")
                 return None
@@ -334,11 +346,14 @@ class EliteLEDPlugin(PluginBase):
          return None
       try:
          success = led.set_led(color, speed)
+      except socket.timeout:
+         log("error", "[EliteLEDPlugin] Timeout while communicating with LED device.")
+         return False
       except Exception as e:
          log("error", f"[EliteLEDPlugin] Exception setting LED: {e}")
          return None 
       if success:
-         helper.put_incoming_event(LEDChangedEvent(new_color=color, speed=speed))
+#         helper.put_incoming_event(LEDChangedEvent(new_color=color, speed=speed)) # No longer needed, projection handles state update
          log("debug", f"[EliteLEDPlugin] LED set to {color}")
          return None
       else:
