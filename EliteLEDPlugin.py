@@ -147,7 +147,7 @@ class EliteLEDPlugin(PluginBase):
                     label="Event LED Colors",
                     fields=[
                         SelectSetting(
-                            key="FSDJump",
+                            key="StartJump",
                             label="FSDJump Color",
                             type="select",
                             default_value="fsd_jump",
@@ -197,10 +197,20 @@ class EliteLEDPlugin(PluginBase):
                             placeholder=""
                         ),
                         SelectSetting(
-                            key="FuelScoop",
+                            key="FuelScoopStart",
                             label="FuelScoop Color",
                             type="select",
                             default_value="breathing_yellow",
+                            select_options=color_options,
+                            multi_select=False,
+                            readonly=False,
+                            placeholder=""
+                        ),
+                        SelectSetting(
+                            key="FuelScoopEnd",
+                            label="FuelScoop Color",
+                            type="select",
+                            default_value="white",
                             select_options=color_options,
                             multi_select=False,
                             readonly=False,
@@ -227,26 +237,29 @@ class EliteLEDPlugin(PluginBase):
         # Configure elite_led_controller with user-provided settings
         led.configure(device_id=device_id, device_ip=device_ip, local_key=local_key, device_ver=device_ver)
         log("debug", f"[EliteLEDPlugin] Tuya device configured: ID={device_id}, IP={device_ip}, Ver={device_ver}")
-
+# Events to be added (modified): StartJump (FSDJump), FuelScoopStart (FuelScoop), FuelScoopEnd (FuelScoop - new color?)
         event_colors = {
-            "FSDJump": helper.get_plugin_setting("EliteLEDController", "event_colors", "FSDJump") or "fsd_jump",
+            "StartJump": helper.get_plugin_setting("EliteLEDController", "event_colors", "StartJump") or "fsd_jump",
             "DockingGranted": helper.get_plugin_setting("EliteLEDController", "event_colors", "DockingGranted") or "white",
             "Undocked": helper.get_plugin_setting("EliteLEDController", "event_colors", "Undocked") or "yellow",
             "UnderAttack": helper.get_plugin_setting("EliteLEDController", "event_colors", "UnderAttack") or "red_alert",
             "Docked": helper.get_plugin_setting("EliteLEDController", "event_colors", "Docked") or "white",
-            "FuelScoop": helper.get_plugin_setting("EliteLEDController", "event_colors", "FuelScoop") or "breathing_yellow",
+            "FuelScoopStart": helper.get_plugin_setting("EliteLEDController", "event_colors", "FuelScoopStart") or "breathing_yellow",
+            "FuelScoopEnd": helper.get_plugin_setting("EliteLEDController", "event_colors", "FuelScoopEnd") or "white",
         }
 
         # === Elite Dangerous Events → LED Mapping ===
         global EVENT_LED_MAP
+        # Events to be added (modified): StartJump (FSDJump), FuelScoopStart (FuelScoop), FuelScoopEnd (FuelScoop - new color?)
         EVENT_LED_MAP = {
             "LoadGame": ("white", "normal"),  # led reset to white on game load
             "UnderAttack": (event_colors["UnderAttack"], "fast"),
-            "FSDJump": (event_colors["FSDJump"], "normal"),
+            "StartJump": (event_colors["StartJump"], "normal"),
             "DockingGranted": (event_colors["DockingGranted"], "normal"),
             "Docked": (event_colors["Docked"], "normal"),
-            "FuelScoop": (event_colors["FuelScoop"], "normal"),
+            "FuelScoopStart": (event_colors["FuelScoopStart"], "normal"),
             "Undocked": (event_colors["Undocked"], "normal"),
+            "FuelScoopEnd": (event_colors["FuelScoopEnd"], "normal"),
         }
 
     # === Action to set LED manually ===
