@@ -169,6 +169,7 @@ class EliteLEDPlugin(PluginBase):
         # Add "hidden" event to be used as "default led color"
         EVENT_LED_MAP = {
             "LoadGame": ("white", "normal"),  # led reset to white on game load
+            "Shutdown": ("white", "normal"),  # led white on game exit
             "UnderAttack": (event_colors["UnderAttack"], "fast"),
             "StartJump": (event_colors["StartJump"], "normal"),
             "DockingGranted": (event_colors["DockingGranted"], "normal"),
