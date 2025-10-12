@@ -230,7 +230,13 @@ class EliteLEDPlugin(PluginBase):
 
     def handle_game_event(self, helper: PluginHelper, event: Event, states: dict[str, dict]) -> bool | None:
         if not isinstance(event, GameEvent):
-            return None  # Ignore non-game events      
+            return None  # Ignore non-game events   
+            # Ignore assistant-completed and non-Elite events
+        if getattr(event, "content", None) and isinstance(event.content, dict):
+            ev_name = event.content.get("event")
+            if ev_name and not ev_name in EVENT_LED_MAP:
+                log("debug", f"[EliteLEDPlugin] Ignored non-Elite event: {ev_name}")
+                return None   
         # Ignore projected LEDChanged events to avoid loops
         if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged": 
             return None
