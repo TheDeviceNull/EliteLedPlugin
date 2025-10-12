@@ -9,9 +9,10 @@ from lib.EventManager import Projection
 from lib.Logger import log
 from . import elite_led_controller as led
 import sys
+import socket
+import threading
 from pathlib import Path
 from lib.Event import GameEvent
-
 
 # Add deps/ folder to sys.path (in case dependencies are vendored inside the plugin)
 sys.path.append(str(Path(__file__).parent / "deps"))
@@ -83,6 +84,9 @@ class EliteLEDPlugin(PluginBase):
     def __init__(self, plugin_manifest: PluginManifest):
         super().__init__(plugin_manifest, event_classes=[LEDChangedEvent])
 
+        # Initialize thread lock for LED operations
+        self._led_lock = threading.Lock()
+
         # === Plugin Settings ===
         self.settings_config: PluginSettings | None = PluginSettings(
             key="EliteLEDController",
@@ -108,115 +112,25 @@ class EliteLEDPlugin(PluginBase):
                     key="tuya_device",
                     label="Tuya Device Configuration",
                     fields=[
-                        TextSetting(
-                            key="device_id",
-                            label="Device ID",
-                            type="text",
-                            readonly=False,
-                            placeholder="Enter Tuya Device ID",
-                            default_value=""
-                        ),
-                        TextSetting(
-                            key="device_ip",
-                            label="Device IP",
-                            type="text",
-                            readonly=False,
-                            placeholder="Enter Tuya Device IP",
-                            default_value=""
-                        ),
-                        TextSetting(
-                            key="local_key",
-                            label="Local Key",
-                            type="text",
-                            readonly=False,
-                            placeholder="Enter Tuya Local Key",
-                            default_value=""
-                        ),
-                        TextSetting(
-                            key="device_ver",
-                            label="Device Version",
-                            type="text",
-                            readonly=False,
-                            placeholder="Tuya Device Version",
-                            default_value="3.3"
-                        ),
+                        TextSetting(key="device_id", label="Device ID", type="text", placeholder="Enter Tuya Device ID", default_value=""),
+                        TextSetting(key="device_ip", label="Device IP", type="text", placeholder="Enter Tuya Device IP", default_value=""),
+                        TextSetting(key="local_key", label="Local Key", type="text", placeholder="Enter Tuya Local Key", default_value=""),
+                        TextSetting(key="device_ver", label="Device Version", type="text", placeholder="Tuya Device Version", default_value="3.3"),
                     ]
-                ),              
+                ),
+                # Event to LED color mapping - add "default" color?
                 SettingsGrid(
                     key="event_colors",
                     label="Event LED Colors",
                     fields=[
-                        SelectSetting(
-                            key="StartJump",
-                            label="FSDJump Color",
-                            type="select",
-                            default_value="fsd_jump",
-                            select_options=color_options,
-                            multi_select=False,
-                            readonly=False,
-                            placeholder=""
-                        ),
-                        SelectSetting(
-                            key="DockingGranted",
-                            label="DockingGranted Color",
-                            type="select",
-                            default_value="white",
-                            select_options=color_options,
-                            multi_select=False,
-                            readonly=False,
-                            placeholder=""
-                        ),
-                        SelectSetting(
-                            key="Undocked",
-                            label="Undocked Color",
-                            type="select",
-                            default_value="yellow",
-                            select_options=color_options,
-                            multi_select=False,
-                            readonly=False,
-                            placeholder=""
-                        ),
-                        SelectSetting(
-                            key="UnderAttack",
-                            label="UnderAttack Color",
-                            type="select",
-                            default_value="red_alert",
-                            select_options=color_options,
-                            multi_select=False,
-                            readonly=False,
-                            placeholder=""
-                        ),
-                        SelectSetting(
-                            key="Docked",
-                            label="Docked Color",
-                            type="select",
-                            default_value="white",
-                            select_options=color_options,
-                            multi_select=False,
-                            readonly=False,
-                            placeholder=""
-                        ),
-                        SelectSetting(
-                            key="FuelScoopStart",
-                            label="FuelScoop Color",
-                            type="select",
-                            default_value="breathing_yellow",
-                            select_options=color_options,
-                            multi_select=False,
-                            readonly=False,
-                            placeholder=""
-                        ),
-                        SelectSetting(
-                            key="FuelScoopEnd",
-                            label="FuelScoop Color",
-                            type="select",
-                            default_value="white",
-                            select_options=color_options,
-                            multi_select=False,
-                            readonly=False,
-                            placeholder=""
-                        ),
-                    ]   
+                        SelectSetting(key="StartJump", label="FSDJump Color", type="select", default_value="fsd_jump", select_options=color_options),
+                        SelectSetting(key="DockingGranted", label="DockingGranted Color", type="select", default_value="white", select_options=color_options),
+                        SelectSetting(key="Undocked", label="Undocked Color", type="select", default_value="yellow", select_options=color_options),
+                        SelectSetting(key="UnderAttack", label="UnderAttack Color", type="select", default_value="red_alert", select_options=color_options),
+                        SelectSetting(key="Docked", label="Docked Color", type="select", default_value="white", select_options=color_options),
+                        SelectSetting(key="FuelScoopStart", label="FuelScoopStart Color", type="select", default_value="breathing_yellow", select_options=color_options),
+                        SelectSetting(key="FuelScoopEnd", label="FuelScoopEnd Color", type="select", default_value="white", select_options=color_options),
+                    ]
                 )   
             ]
         )
@@ -238,6 +152,7 @@ class EliteLEDPlugin(PluginBase):
         led.configure(device_id=device_id, device_ip=device_ip, local_key=local_key, device_ver=device_ver)
         log("debug", f"[EliteLEDPlugin] Tuya device configured: ID={device_id}, IP={device_ip}, Ver={device_ver}")
 # Events to be added (modified): StartJump (FSDJump), FuelScoopStart (FuelScoop), FuelScoopEnd (FuelScoop - new color?)
+# Add default led color
         event_colors = {
             "StartJump": helper.get_plugin_setting("EliteLEDController", "event_colors", "StartJump") or "fsd_jump",
             "DockingGranted": helper.get_plugin_setting("EliteLEDController", "event_colors", "DockingGranted") or "white",
@@ -251,15 +166,16 @@ class EliteLEDPlugin(PluginBase):
         # === Elite Dangerous Events → LED Mapping ===
         global EVENT_LED_MAP
         # Events to be added (modified): StartJump (FSDJump), FuelScoopStart (FuelScoop), FuelScoopEnd (FuelScoop - new color?)
+        # Add "hidden" event to be used as "default led color"
         EVENT_LED_MAP = {
             "LoadGame": ("white", "normal"),  # led reset to white on game load
             "UnderAttack": (event_colors["UnderAttack"], "fast"),
             "StartJump": (event_colors["StartJump"], "normal"),
             "DockingGranted": (event_colors["DockingGranted"], "normal"),
             "Docked": (event_colors["Docked"], "normal"),
-            "FuelScoopStart": (event_colors["FuelScoopStart"], "normal"),
+            "FuelScoopStart": (event_colors["FuelScoopStart"], "normal"), # Wrong event name. Should be "FuelScoop"
             "Undocked": (event_colors["Undocked"], "normal"),
-            "FuelScoopEnd": (event_colors["FuelScoopEnd"], "normal"),
+            "FuelScoopEnd": (event_colors["FuelScoopEnd"], "normal"), # To be removed? Or to be change to "ReservoirReplenished"?
         }
 
     # === Action to set LED manually ===
@@ -301,18 +217,15 @@ class EliteLEDPlugin(PluginBase):
 # Also react to game or conversational events directly
         helper.register_sideeffect(lambda event, states: self.handle_game_event(helper, event, states))
 
-
+    # === Core LED logic ===
     def set_led(self, args: dict[str, Any], states: dict[str, dict], helper: PluginHelper) -> str:
         color = args["color"]
         speed = args.get("speed", "normal")
         try:
             self._apply_led(color, speed, helper, states)
             return "LED set successfully."
-        except socket.timeout:
-            log("error", "[EliteLEDPlugin] Timeout while communicating with LED device.")
-            return False
         except Exception as e:
-            log("error", f"[EliteLEDPlugin] Exception setting LED: {e}")
+            log("error", f"[EliteLEDPlugin] Error setting LED: {e}")
             return f"Error setting LED: {e}"
 
     def handle_game_event(self, helper: PluginHelper, event: Event, states: dict[str, dict]) -> bool | None:
@@ -327,13 +240,7 @@ class EliteLEDPlugin(PluginBase):
         # Extract event name from GameEvent content
         if hasattr(event, "content") and isinstance(event.content, dict):
             event_name = event.content.get("event")
-        # Fallback for text-based events (e.g. ConversationEvent)
-#        elif hasattr(event, "content") and isinstance(event.content, str):
-#            text = event.content.strip().lower()
-#            for key in EVENT_LED_MAP:
-#                if key.lower() in text:
-#                    event_name = key
-#                    break
+
         if event_name and event_name in EVENT_LED_MAP:
             color, speed = EVENT_LED_MAP[event_name]
             log("debug", f"[EliteLEDPlugin] Game event '{event_name}' with LED '{color}'")
@@ -351,24 +258,23 @@ class EliteLEDPlugin(PluginBase):
 
     def _apply_led(self, color: str, speed: str, helper: PluginHelper, states: dict[str, dict]) -> str:
       # Use the projected state passed to the method
-      current_state = states.get("CurrentLEDState", {})
+        current_state = states.get("CurrentLEDState", {})
 
       # Avoid redundant LED updates
-      if current_state.get("color") == color and current_state.get("speed") == speed:
-         log("debug", f"[EliteLEDPlugin] LED already set to {color} (speed={speed}), skipping.")
-         return None
-      try:
-         success = led.set_led(color, speed)
-      except socket.timeout:
-         log("error", "[EliteLEDPlugin] Timeout while communicating with LED device.")
-         return False
-      except Exception as e:
-         log("error", f"[EliteLEDPlugin] Exception setting LED: {e}")
-         return None 
-      if success:
-#         helper.put_incoming_event(LEDChangedEvent(new_color=color, speed=speed)) # No longer needed, projection handles state update
-         log("debug", f"[EliteLEDPlugin] LED set to {color}")
-         return None
-      else:
-         log("error", f"[EliteLEDPlugin] Error setting LED to {color}")
-         return None
+        if current_state.get("color") == color and current_state.get("speed") == speed:
+            log("debug", f"[EliteLEDPlugin] LED already set to {color} (speed={speed}), skipping.")
+            return 
+        def worker():
+            try:
+                with self._led_lock:
+                    success = led.set_led(color, speed)
+                if success:
+                    log("debug", f"[EliteLEDPlugin] LED set to {color}")
+                else:
+                    log("error", f"[EliteLEDPlugin] Error setting LED to {color}")
+            except socket.timeout:
+                log("error", "[EliteLEDPlugin] Timeout while communicating with LED device.")
+            except Exception as e:
+                log("error", f"[EliteLEDPlugin] Exception setting LED: {e}")
+
+        threading.Thread(target=worker, name=f"LEDSet-{color}", daemon=True).start()
