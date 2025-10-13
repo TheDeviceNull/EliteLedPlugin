@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from lib.PluginHelper import PluginHelper, PluginManifest
 from lib.PluginBase import PluginBase
 from lib.PluginSettingDefinitions import PluginSettings, SettingsGrid, TextSetting, ParagraphSetting, SelectSetting, SelectOption
-from lib.Event import Event, ProjectedEvent
+from lib.Event import Event, ProjectedEvent, GameEvent  
 from lib.EventManager import Projection
 from lib.Logger import log
 from . import elite_led_controller as led
@@ -12,7 +12,6 @@ import sys
 import socket
 import threading
 from pathlib import Path
-from lib.Event import GameEvent
 
 # Add deps/ folder to sys.path (in case dependencies are vendored inside the plugin)
 sys.path.append(str(Path(__file__).parent / "deps"))
@@ -61,22 +60,22 @@ class CurrentLEDState(Projection[dict[str, Any]]):
             }))
         return projected
 # === Game Event to Led Projection ===
-class GameEventToLEDProjection(Projection[dict[str, Any]]):
-    def get_default_state(self) -> dict[str, Any]:
-        return {"last_event": None}
-
-    def process(self, event: Event) -> list[ProjectedEvent]:
-        projected: list[ProjectedEvent] = []
-        if hasattr(event, "event"):
-            evt_name = getattr(event, "event")
-            if evt_name in EVENT_LED_MAP:
-                color, speed = EVENT_LED_MAP[evt_name]
-                projected.append(ProjectedEvent({
-                    "event": "LEDChanged",
-                    "new_color": color,
-                    "speed": speed
-                }))
-        return projected
+#class GameEventToLEDProjection(Projection[dict[str, Any]]):
+#    def get_default_state(self) -> dict[str, Any]:
+#        return {"last_event": None}
+#
+#    def process(self, event: Event) -> list[ProjectedEvent]:
+#        projected: list[ProjectedEvent] = []
+#        if hasattr(event, "event"):
+#            evt_name = getattr(event, "event")
+#            if evt_name in EVENT_LED_MAP:
+#                color, speed = EVENT_LED_MAP[evt_name]
+#                projected.append(ProjectedEvent({
+#                    "event": "LEDChanged",
+#                    "new_color": color,
+#                    "speed": speed
+#                }))
+#        return projected
 
 
 # === Main Plugin Class ===
@@ -150,7 +149,7 @@ class EliteLEDPlugin(PluginBase):
 
         # Configure elite_led_controller with user-provided settings
         led.configure(device_id=device_id, device_ip=device_ip, local_key=local_key, device_ver=device_ver)
-        log("debug", f"[EliteLEDPlugin] Tuya device configured: ID={device_id}, IP={device_ip}, Ver={device_ver}")
+#        log("debug", f"[EliteLEDPlugin] Tuya device configured: ID={device_id}, IP={device_ip}, Ver={device_ver}")
 # Events to be added (modified): StartJump (FSDJump), FuelScoopStart (FuelScoop), FuelScoopEnd (FuelScoop - new color?)
 # Add default led color
         event_colors = {
@@ -198,7 +197,7 @@ class EliteLEDPlugin(PluginBase):
 
     def register_projections(self, helper: PluginHelper):
         helper.register_projection(CurrentLEDState())
-        helper.register_projection(GameEventToLEDProjection())
+#        helper.register_projection(GameEventToLEDProjection())
 
     def register_status_generators(self, helper: PluginHelper):
         helper.register_status_generator(
@@ -209,12 +208,12 @@ class EliteLEDPlugin(PluginBase):
         helper.register_should_reply_handler(lambda event, states: self.handle_game_event(helper, event, states))
 
     def register_sideeffects(self, helper: PluginHelper):
-        def apply_led_from_projection(event: Event, states: dict[str, dict]):
-            if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged":
-                color = event.content.get("new_color")
-                speed = event.content.get("speed", "normal")
-                self._apply_led(color, speed, helper, states)
-        helper.register_sideeffect(apply_led_from_projection)
+#        def apply_led_from_projection(event: Event, states: dict[str, dict]):
+#            if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged":
+#                color = event.content.get("new_color")
+#                speed = event.content.get("speed", "normal")
+#                self._apply_led(color, speed, helper, states)
+#        helper.register_sideeffect(apply_led_from_projection)
 # Also react to game or conversational events directly
         helper.register_sideeffect(lambda event, states: self.handle_game_event(helper, event, states))
 
@@ -240,8 +239,8 @@ class EliteLEDPlugin(PluginBase):
                 return None   
         # Ignore projected LEDChanged events to avoid loops
         if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged": 
+            log("debug", "[EliteLEDPlugin] Ignored projected LEDChanged event to avoid loop.")
             return None
-
         event_name = None
 #        log("debug", f"[EliteLEDPlugin] Game event '{event}'")
         # Extract event name from GameEvent content
@@ -253,7 +252,7 @@ class EliteLEDPlugin(PluginBase):
             log("debug", f"[EliteLEDPlugin] Game event '{event_name}' with LED '{color}'")
             try:
                 self._apply_led(color, speed, helper, states)
-                return None          
+                return f'LED set to {color} for event {event_name}'          
             except socket.timeout:
                 log("error", "[EliteLEDPlugin] Timeout while communicating with LED device.")
                 return False
@@ -264,8 +263,10 @@ class EliteLEDPlugin(PluginBase):
 
 
     def _apply_led(self, color: str, speed: str, helper: PluginHelper, states: dict[str, dict]) -> str:
+        log("debug", f"[EliteLEDPlugin] Entered in _apply_led with color={color}, speed={speed}")
       # Use the projected state passed to the method
         current_state = states.get("CurrentLEDState", {})
+        log("debug", f"[EliteLEDPlugin] Current LED state: {current_state}")
 
       # Avoid redundant LED updates
         if current_state.get("color") == color and current_state.get("speed") == speed:
@@ -279,8 +280,6 @@ class EliteLEDPlugin(PluginBase):
                     log("debug", f"[EliteLEDPlugin] LED set to {color}")
                 else:
                     log("error", f"[EliteLEDPlugin] Error setting LED to {color}")
-            except socket.timeout:
-                log("error", "[EliteLEDPlugin] Timeout while communicating with LED device.")
             except Exception as e:
                 log("error", f"[EliteLEDPlugin] Exception setting LED: {e}")
 
