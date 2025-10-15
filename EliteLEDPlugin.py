@@ -278,6 +278,7 @@ class EliteLEDPlugin(PluginBase):
                     success = led.set_led(color, speed)
                 if success:
                     log("debug", f"[EliteLEDPlugin] LED set to {color}")
+                    helper.emit_event(LEDChangedEvent(new_color=color, speed=speed))
                 else:
                     log("error", f"[EliteLEDPlugin] Error setting LED to {color}")
             except Exception as e:
