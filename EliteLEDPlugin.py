@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from lib.PluginHelper import PluginHelper, PluginManifest
 from lib.PluginBase import PluginBase
 from lib.PluginSettingDefinitions import PluginSettings, SettingsGrid, TextSetting, ParagraphSetting, SelectSetting, SelectOption
-from lib.Event import Event, ProjectedEvent, GameEvent  
+from lib.Event import Event, ProjectedEvent, GameEvent, StatusEvent
 from lib.EventManager import Projection
 from lib.Logger import log
 from . import elite_led_controller as led
@@ -205,17 +205,20 @@ class EliteLEDPlugin(PluginBase):
         )
 
     def register_should_reply_handlers(self, helper: PluginHelper):
-        helper.register_should_reply_handler(lambda event, states: self.handle_game_event(helper, event, states))
+        # Do not perform side-effects from the should_reply handler.
+        # Return None to leave reply decision to the assistant (avoid duplicate handling).
+        helper.register_should_reply_handler(lambda event, states: None)
 
     def register_sideeffects(self, helper: PluginHelper):
-#        def apply_led_from_projection(event: Event, states: dict[str, dict]):
-#            if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged":
-#                color = event.content.get("new_color")
-#                speed = event.content.get("speed", "normal")
-#                self._apply_led(color, speed, helper, states)
-#        helper.register_sideeffect(apply_led_from_projection)
-# Also react to game or conversational events directly
-        helper.register_sideeffect(lambda event, states: self.handle_game_event(helper, event, states))
+        # React to events by applying LED side-effects only here (no duplicate calls from should_reply).
+        def _sideeffect_apply(event: Event, states: dict[str, dict]):
+            try:
+                # Delegate to the same handler used previously which applies LEDs and returns status
+                self.handle_game_event(helper, event, states)
+            except Exception as e:
+                log("error", f"[EliteLEDPlugin] Sideeffect handler error: {e}")
+
+        helper.register_sideeffect(_sideeffect_apply)
 
     # === Core LED logic ===
     def set_led(self, args: dict[str, Any], states: dict[str, dict], helper: PluginHelper) -> str:
@@ -229,37 +232,103 @@ class EliteLEDPlugin(PluginBase):
             return f"Error setting LED: {e}"
 
     def handle_game_event(self, helper: PluginHelper, event: Event, states: dict[str, dict]) -> bool | None:
-        if not isinstance(event, GameEvent):
-            return None  # Ignore non-game events   
-            # Ignore assistant-completed and non-Elite events
-        if getattr(event, "content", None) and isinstance(event.content, dict):
-            ev_name = event.content.get("event")
-            if ev_name and not ev_name in EVENT_LED_MAP:
-                log("debug", f"[EliteLEDPlugin] Ignored non-Elite event: {ev_name}")
-                return None   
         # Ignore projected LEDChanged events to avoid loops
-        if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged": 
+        if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged":
             log("debug", "[EliteLEDPlugin] Ignored projected LEDChanged event to avoid loop.")
             return None
-        event_name = None
-#        log("debug", f"[EliteLEDPlugin] Game event '{event}'")
-        # Extract event name from GameEvent content
-        if hasattr(event, "content") and isinstance(event.content, dict):
-            event_name = event.content.get("event")
 
-        if event_name and event_name in EVENT_LED_MAP:
-            color, speed = EVENT_LED_MAP[event_name]
-            log("debug", f"[EliteLEDPlugin] Game event '{event_name}' with LED '{color}'")
+        # Determine event name from GameEvent (journal) or StatusEvent (status-derived)
+        event_name = None
+        payload = None
+        if isinstance(event, GameEvent):
+            payload = event.content if getattr(event, "content", None) else {}
+            event_name = payload.get("event")
+        elif isinstance(event, StatusEvent):
+            payload = event.status if getattr(event, "status", None) else {}
+            event_name = payload.get("event")
+        else:
+            # Not a Game or Status event; ignore
+            return None
+
+        # If event is not something we know about (and not one of our special cases), ignore
+        if not event_name:
+            return None
+
+        # Map/normalize some status names to the event colors keys used in settings
+        # Settings use FuelScoopStart / FuelScoopEnd; StatusParser emits FuelScoopStarted/FuelScoopEnded
+        # Journal emits "FuelScoop" and "ReservoirReplenished"
+        # Handle FuelScoop (journal) specially based on Scooped value
+        if event_name == "FuelScoop":
+            scooped = 0
+            if isinstance(payload, dict):
+                scooped = payload.get("Scooped", 0) or 0
+            if scooped > 0:
+                color, speed = EVENT_LED_MAP.get("FuelScoopStart", ("breathing_yellow", "normal"))
+                log("debug", f"[EliteLEDPlugin] FuelScoop journal: scooped={scooped}, applying start color {color}")
+                try:
+                    self._apply_led(color, speed, helper, states)
+                    return True
+                except Exception as e:
+                    log("error", f"[EliteLEDPlugin] Exception setting LED for FuelScoop: {e}")
+                    return None
+            else:
+                # scooped == 0 treat as end
+                color, speed = EVENT_LED_MAP.get("FuelScoopEnd", ("white", "normal"))
+                try:
+                    self._apply_led(color, speed, helper, states)
+                    return True
+                except Exception as e:
+                    log("error", f"[EliteLEDPlugin] Exception setting LED for FuelScoop end: {e}")
+                    return None
+
+        # ReservoirReplenished -> treat as fuel-scoop end
+        if event_name == "ReservoirReplenished":
+            color, speed = EVENT_LED_MAP.get("FuelScoopEnd", ("white", "normal"))
+            log("debug", f"[EliteLEDPlugin] ReservoirReplenished -> applying end color {color}")
             try:
                 self._apply_led(color, speed, helper, states)
-                return f'LED set to {color} for event {event_name}'          
-            except socket.timeout:
-                log("error", "[EliteLEDPlugin] Timeout while communicating with LED device.")
-                return False
+                return True
             except Exception as e:
-                log("error", f"[EliteLEDPlugin] Exception setting LED for event '{event_name}': {e}")
+                log("error", f"[EliteLEDPlugin] Exception setting LED for ReservoirReplenished: {e}")
                 return None
-        return None
+
+        # Status-derived names from StatusParser (FuelScoopStarted / FuelScoopEnded)
+        if event_name in ("FuelScoopStarted", "FuelScoopStarted"):
+            color, speed = EVENT_LED_MAP.get("FuelScoopStart", ("breathing_yellow", "normal"))
+            log("debug", f"[EliteLEDPlugin] Status event {event_name} -> start color {color}")
+            try:
+                self._apply_led(color, speed, helper, states)
+                return True
+            except Exception as e:
+                log("error", f"[EliteLEDPlugin] Exception setting LED for {event_name}: {e}")
+                return None
+
+        if event_name in ("FuelScoopEnded", "FuelScoopEnded"):
+            color, speed = EVENT_LED_MAP.get("FuelScoopEnd", ("white", "normal"))
+            log("debug", f"[EliteLEDPlugin] Status event {event_name} -> end color {color}")
+            try:
+                self._apply_led(color, speed, helper, states)
+                return True
+            except Exception as e:
+                log("error", f"[EliteLEDPlugin] Exception setting LED for {event_name}: {e}")
+                return None
+
+        # Fallback to original mapping for other events
+        if event_name not in EVENT_LED_MAP:
+            log("debug", f"[EliteLEDPlugin] Ignored non-Elite event: {event_name}")
+            return None
+
+        color, speed = EVENT_LED_MAP[event_name]
+        log("debug", f"[EliteLEDPlugin] Game/Status event '{event_name}' with LED '{color}'")
+        try:
+            self._apply_led(color, speed, helper, states)
+            return True
+        except socket.timeout:
+            log("error", "[EliteLEDPlugin] Timeout while communicating with LED device.")
+            return False
+        except Exception as e:
+            log("error", f"[EliteLEDPlugin] Exception setting LED for event '{event_name}': {e}")
+            return None
 
 
     def _apply_led(self, color: str, speed: str, helper: PluginHelper, states: dict[str, dict]) -> str:
@@ -278,7 +347,15 @@ class EliteLEDPlugin(PluginBase):
                     success = led.set_led(color, speed)
                 if success:
                     log("debug", f"[EliteLEDPlugin] LED set to {color}")
-                    helper.emit_event(LEDChangedEvent(new_color=color, speed=speed))
+                    # Prefer emit_event if available; otherwise fallback to put_incoming_event
+                    try:
+                        emit = getattr(helper, "emit_event", None)
+                        if callable(emit):
+                            emit(LEDChangedEvent(new_color=color, speed=speed))
+                        else:
+                            helper.put_incoming_event(LEDChangedEvent(new_color=color, speed=speed))
+                    except Exception as e:
+                        log("error", f"[EliteLEDPlugin] Emitting LEDChangedEvent failed: {e}")
                 else:
                     log("error", f"[EliteLEDPlugin] Error setting LED to {color}")
             except Exception as e:
