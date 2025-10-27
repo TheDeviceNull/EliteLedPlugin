@@ -59,24 +59,6 @@ class CurrentLEDState(Projection[dict[str, Any]]):
                 "speed": event.speed
             }))
         return projected
-# === Game Event to Led Projection ===
-#class GameEventToLEDProjection(Projection[dict[str, Any]]):
-#    def get_default_state(self) -> dict[str, Any]:
-#        return {"last_event": None}
-#
-#    def process(self, event: Event) -> list[ProjectedEvent]:
-#        projected: list[ProjectedEvent] = []
-#        if hasattr(event, "event"):
-#            evt_name = getattr(event, "event")
-#            if evt_name in EVENT_LED_MAP:
-#                color, speed = EVENT_LED_MAP[evt_name]
-#                projected.append(ProjectedEvent({
-#                    "event": "LEDChanged",
-#                    "new_color": color,
-#                    "speed": speed
-#                }))
-#        return projected
-
 
 # === Main Plugin Class ===
 class EliteLEDPlugin(PluginBase):
@@ -111,6 +93,13 @@ class EliteLEDPlugin(PluginBase):
                     key="tuya_device",
                     label="Tuya Device Configuration",
                     fields=[
+                        ParagraphSetting(
+                            key="tuya_desc",
+                            label="Description",
+                            type="paragraph",
+                            readonly=True,
+                            content="Enter your Tuya device ID, IP, local key and device version so the plugin can connect to your LED device. Leave blank to skip device connection."
+                        ),
                         TextSetting(key="device_id", label="Device ID", type="text", placeholder="Enter Tuya Device ID", default_value=""),
                         TextSetting(key="device_ip", label="Device IP", type="text", placeholder="Enter Tuya Device IP", default_value=""),
                         TextSetting(key="local_key", label="Local Key", type="text", placeholder="Enter Tuya Local Key", default_value=""),
@@ -122,6 +111,13 @@ class EliteLEDPlugin(PluginBase):
                     key="event_colors",
                     label="Event LED Colors",
                     fields=[
+                        ParagraphSetting(
+                            key="event_colors_desc",
+                            label="Description",
+                            type="paragraph",
+                            readonly=True,
+                            content="Choose the color or scene for each game event. The selected color will be applied automatically when the corresponding in-game event occurs."
+                        ),
                         SelectSetting(key="StartJump", label="FSDJump Color", type="select", default_value="fsd_jump", select_options=color_options),
                         SelectSetting(key="DockingGranted", label="DockingGranted Color", type="select", default_value="white", select_options=color_options),
                         SelectSetting(key="Undocked", label="Undocked Color", type="select", default_value="yellow", select_options=color_options),
