@@ -51,6 +51,31 @@ color_options = [
     for c in led.COLORS.keys()
 ]
 
+# New release metadata
+__version__ = "2.0.1"
+RELEASE_TITLE = "Event Reactor"
+
+RELEASE_NOTES_EN = """Event Reactor — EliteLEDPlugin v2.0.1
+
+Improvements
+- Fast TCP reachability checks added for Tuya devices to fail fast when the device is offline.
+- Short-term caching of reachability checks and a cooldown/backoff after failures to reduce repeated blocking attempts.
+- Safer error handling: actions now verify device reachability and no longer report success if the device is unreachable.
+- Reduced chances of tinytuya causing main-thread blocking by skipping attempts when the device is clearly unreachable.
+- Added handling for FuelScoop / ReservoirReplenished events to better map start/end LED states.
+- Improved logging around LED operations to help diagnose connectivity issues.
+
+Fixes
+- Prevented misleading success responses when LED device is offline.
+- Avoided duplicate/projection loops by emitting LEDChangedEvent only on successful sets.
+- Reduced noisy retries and improved thread-safe LED operations.
+
+Notes
+- Verify plugin Tuya settings (Device ID, IP, Local Key, Device Version) after upgrading.
+- If the device is offline the plugin will return a clear message instead of claiming success.
+- No breaking changes expected for existing configurations.
+"""
+
 # === Custom LED Event ===
 @dataclass
 class LEDChangedEvent(Event):
