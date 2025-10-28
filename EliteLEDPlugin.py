@@ -18,6 +18,32 @@ sys.path.append(str(Path(__file__).parent / "deps"))
 
 import tinytuya  # ensure tinytuya can be imported when bundled
 
+# --- Plugin logging configuration (edit this value to change verbosity) ---
+# Options: "DEBUG", "INFO", "WARN", "ERROR"
+# Default "ERROR" means in normal usage the plugin logs the least (only errors).
+PLUGIN_LOG_LEVEL = "ERROR"
+
+_LEVELS = {
+    "DEBUG": 10,
+    "INFO": 20,
+    "WARN": 30,
+    "ERROR": 40,
+}
+
+def p_log(level: str, *args):
+    """Plugin-level filtered logger. Calls global log(...) only if level >= PLUGIN_LOG_LEVEL."""
+    try:
+        lvl = _LEVELS.get(level.upper(), 999)
+        threshold = _LEVELS.get(PLUGIN_LOG_LEVEL.upper(), 999)
+        if lvl >= threshold:
+            # forward to global logger preserving same signature
+            log(level, *args)
+    except Exception:
+        # Failsafe: do not break plugin if logging fails
+        try:
+            log("error", "[EliteLEDPlugin] logging failure", level, *args)
+        except Exception:
+            pass
 
 # Color options for the dropdowns
 color_options = [
@@ -145,9 +171,10 @@ class EliteLEDPlugin(PluginBase):
 
         # Configure elite_led_controller with user-provided settings
         led.configure(device_id=device_id, device_ip=device_ip, local_key=local_key, device_ver=device_ver)
-#        log("debug", f"[EliteLEDPlugin] Tuya device configured: ID={device_id}, IP={device_ip}, Ver={device_ver}")
-# Events to be added (modified): StartJump (FSDJump), FuelScoopStart (FuelScoop), FuelScoopEnd (FuelScoop - new color?)
-# Add default led color
+        p_log("DEBUG", f"[EliteLEDPlugin] Tuya device configured: ID={device_id}, IP={device_ip}, Ver={device_ver}")
+
+        # Events to be added (modified): StartJump (FSDJump), FuelScoopStart (FuelScoop), FuelScoopEnd (FuelScoop - new color?)
+        # Add default led color
         event_colors = {
             "StartJump": helper.get_plugin_setting("EliteLEDController", "event_colors", "StartJump") or "fsd_jump",
             "DockingGranted": helper.get_plugin_setting("EliteLEDController", "event_colors", "DockingGranted") or "white",
@@ -169,9 +196,9 @@ class EliteLEDPlugin(PluginBase):
             "StartJump": (event_colors["StartJump"], "normal"),
             "DockingGranted": (event_colors["DockingGranted"], "normal"),
             "Docked": (event_colors["Docked"], "normal"),
-            "FuelScoopStart": (event_colors["FuelScoopStart"], "normal"), # Wrong event name. Should be "FuelScoop"
+            "FuelScoopStart": (event_colors["FuelScoopStart"], "normal"),
             "Undocked": (event_colors["Undocked"], "normal"),
-            "FuelScoopEnd": (event_colors["FuelScoopEnd"], "normal"), # To be removed? Or to be change to "ReservoirReplenished"?
+            "FuelScoopEnd": (event_colors["FuelScoopEnd"], "normal"), # custom event for FuelScoop end
         }
 
     # === Action to set LED manually ===
@@ -190,21 +217,21 @@ class EliteLEDPlugin(PluginBase):
             lambda args, states: self.set_led(args, states, helper),
             "global"
         )
-
+# === Projection for current LED state ===
     def register_projections(self, helper: PluginHelper):
         helper.register_projection(CurrentLEDState())
-#        helper.register_projection(GameEventToLEDProjection())
-
+# === Status generator for current LED state ===
     def register_status_generators(self, helper: PluginHelper):
         helper.register_status_generator(
             lambda states: [("Current LED state", states.get("CurrentLEDState", {}))]
         )
-
+# === Should-reply handler to process game events for LED changes ===
     def register_should_reply_handlers(self, helper: PluginHelper):
         # Do not perform side-effects from the should_reply handler.
         # Return None to leave reply decision to the assistant (avoid duplicate handling).
         helper.register_should_reply_handler(lambda event, states: None)
 
+# === Side-effect to apply LED changes based on game events ===
     def register_sideeffects(self, helper: PluginHelper):
         # React to events by applying LED side-effects only here (no duplicate calls from should_reply).
         def _sideeffect_apply(event: Event, states: dict[str, dict]):
@@ -221,16 +248,26 @@ class EliteLEDPlugin(PluginBase):
         color = args["color"]
         speed = args.get("speed", "normal")
         try:
+            # Fast check: avoid queuing/claiming success if device is unreachable
+            try:
+                reachable = led.is_reachable()
+            except Exception:
+                reachable = False
+            if not reachable:
+                log("warn", f"[EliteLEDPlugin] set_led aborted: device unreachable, color={color}")
+                return "LED device unreachable; check IP/configuration and try again."
+            # queue async worker as before
             self._apply_led(color, speed, helper, states)
-            return "LED set successfully."
+            return "LED set queued."
         except Exception as e:
             log("error", f"[EliteLEDPlugin] Error setting LED: {e}")
             return f"Error setting LED: {e}"
-
+        
+# === Main event handler to process game events and set LEDs ===
     def handle_game_event(self, helper: PluginHelper, event: Event, states: dict[str, dict]) -> bool | None:
         # Ignore projected LEDChanged events to avoid loops
         if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged":
-            log("debug", "[EliteLEDPlugin] Ignored projected LEDChanged event to avoid loop.")
+            p_log("DEBUG", "[EliteLEDPlugin] Ignored projected LEDChanged event to avoid loop.")
             return None
 
         # Determine event name from GameEvent (journal) or StatusEvent (status-derived)
@@ -260,7 +297,7 @@ class EliteLEDPlugin(PluginBase):
                 scooped = payload.get("Scooped", 0) or 0
             if scooped > 0:
                 color, speed = EVENT_LED_MAP.get("FuelScoopStart", ("breathing_yellow", "normal"))
-                log("debug", f"[EliteLEDPlugin] FuelScoop journal: scooped={scooped}, applying start color {color}")
+                p_log("DEBUG", f"[EliteLEDPlugin] FuelScoop journal: scooped={scooped}, applying start color {color}")
                 try:
                     self._apply_led(color, speed, helper, states)
                     return True
@@ -276,11 +313,11 @@ class EliteLEDPlugin(PluginBase):
                 except Exception as e:
                     log("error", f"[EliteLEDPlugin] Exception setting LED for FuelScoop end: {e}")
                     return None
-
-        # ReservoirReplenished -> treat as fuel-scoop end
+                
+# Handle ReservoirReplenished as FuelScoop end
         if event_name == "ReservoirReplenished":
             color, speed = EVENT_LED_MAP.get("FuelScoopEnd", ("white", "normal"))
-            log("debug", f"[EliteLEDPlugin] ReservoirReplenished -> applying end color {color}")
+            p_log("DEBUG", f"[EliteLEDPlugin] ReservoirReplenished -> applying end color {color}")
             try:
                 self._apply_led(color, speed, helper, states)
                 return True
@@ -291,7 +328,7 @@ class EliteLEDPlugin(PluginBase):
         # Status-derived names from StatusParser (FuelScoopStarted / FuelScoopEnded)
         if event_name in ("FuelScoopStarted", "FuelScoopStarted"):
             color, speed = EVENT_LED_MAP.get("FuelScoopStart", ("breathing_yellow", "normal"))
-            log("debug", f"[EliteLEDPlugin] Status event {event_name} -> start color {color}")
+            p_log("DEBUG", f"[EliteLEDPlugin] Status event {event_name} -> start color {color}")
             try:
                 self._apply_led(color, speed, helper, states)
                 return True
@@ -301,7 +338,7 @@ class EliteLEDPlugin(PluginBase):
 
         if event_name in ("FuelScoopEnded", "FuelScoopEnded"):
             color, speed = EVENT_LED_MAP.get("FuelScoopEnd", ("white", "normal"))
-            log("debug", f"[EliteLEDPlugin] Status event {event_name} -> end color {color}")
+            p_log("DEBUG", f"[EliteLEDPlugin] Status event {event_name} -> end color {color}")
             try:
                 self._apply_led(color, speed, helper, states)
                 return True
@@ -311,11 +348,11 @@ class EliteLEDPlugin(PluginBase):
 
         # Fallback to original mapping for other events
         if event_name not in EVENT_LED_MAP:
-            log("debug", f"[EliteLEDPlugin] Ignored non-Elite event: {event_name}")
+            p_log("DEBUG", f"[EliteLEDPlugin] Ignored non-Elite event: {event_name}")
             return None
 
         color, speed = EVENT_LED_MAP[event_name]
-        log("debug", f"[EliteLEDPlugin] Game/Status event '{event_name}' with LED '{color}'")
+        p_log("DEBUG", f"[EliteLEDPlugin] Game/Status event '{event_name}' with LED '{color}'")
         try:
             self._apply_led(color, speed, helper, states)
             return True
@@ -326,24 +363,25 @@ class EliteLEDPlugin(PluginBase):
             log("error", f"[EliteLEDPlugin] Exception setting LED for event '{event_name}': {e}")
             return None
 
-
     def _apply_led(self, color: str, speed: str, helper: PluginHelper, states: dict[str, dict]) -> str:
-        log("debug", f"[EliteLEDPlugin] Entered in _apply_led with color={color}, speed={speed}")
-      # Use the projected state passed to the method
+        p_log("DEBUG", f"[EliteLEDPlugin] Entered in _apply_led with color={color}, speed={speed}")
         current_state = states.get("CurrentLEDState", {})
-        log("debug", f"[EliteLEDPlugin] Current LED state: {current_state}")
+        p_log("DEBUG", f"[EliteLEDPlugin] Current LED state: {current_state}")
 
-      # Avoid redundant LED updates
         if current_state.get("color") == color and current_state.get("speed") == speed:
-            log("debug", f"[EliteLEDPlugin] LED already set to {color} (speed={speed}), skipping.")
-            return 
+            p_log("DEBUG", f"[EliteLEDPlugin] LED already set to {color} (speed={speed}), skipping.")
+            return
         def worker():
             try:
+                # Fast pre-check: if device unreachable skip immediately (tinytuya may block otherwise)
+                if not led.is_reachable():
+                    p_log("WARN", f"[EliteLEDPlugin] LED device unreachable, skipping attempt to set {color}.")
+                    return
+
                 with self._led_lock:
                     success = led.set_led(color, speed)
                 if success:
-                    log("debug", f"[EliteLEDPlugin] LED set to {color}")
-                    # Prefer emit_event if available; otherwise fallback to put_incoming_event
+                    p_log("INFO", f"[EliteLEDPlugin] LED set to {color}")
                     try:
                         emit = getattr(helper, "emit_event", None)
                         if callable(emit):

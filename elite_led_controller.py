@@ -5,21 +5,30 @@ import socket
 from lib.Logger import log
 
 
-# Disable noisy tinytuya logging
+# Disable noisy tinytuya logging and make sure tinytuya debug off
 logging.getLogger("tinytuya").setLevel(logging.CRITICAL)
 tinytuya.set_debug(False)
 
-# === Set a timeout for socket operations ===
+# === Socket / timeouts ===
+# Global default socket timeout (sensible default)
 socket.setdefaulttimeout(2)
 
-# === Configure Tuya device settings from plugin ===
-def configure(device_id: str, device_ip: str, local_key: str, device_ver: float = 3.3):
-    """Set Tuya device parameters from plugin settings"""
-    global DEVICE_ID, DEVICE_IP, LOCAL_KEY, DEVICE_VER
-    DEVICE_ID = device_id
-    DEVICE_IP = device_ip
-    LOCAL_KEY = local_key
-    DEVICE_VER = device_ver
+# === Tuya defaults / globals ===
+DEVICE_ID: str | None = None
+DEVICE_IP: str | None = None
+LOCAL_KEY: str | None = None
+DEVICE_VER: float = 3.3
+
+# --- Reachability / backoff globals ---
+DEFAULT_TUYA_PORT = 6668
+# timestamp (epoch) of last failure to reach device
+_last_failure_time: float = 0.0
+# when a failure occurs, skip further attempts for this many seconds (backoff)
+_failure_cooldown: float = 30.0
+# cache last reachability check result and time (avoid too-frequent checks)
+_reachability_cache_ttl: float = 5.0
+_reachability_cache_time: float = 0.0
+_reachability_cache_result: bool = False
 
 # === Colors mapping ===
 COLORS = {
@@ -61,21 +70,85 @@ SPEEDS = {
     'slow': '3c3c'
 }
 
+# === Configuration setter ===
+def configure(device_id: str, device_ip: str, local_key: str, device_ver: float = 3.3):
+    """Set Tuya device parameters from plugin settings"""
+    global DEVICE_ID, DEVICE_IP, LOCAL_KEY, DEVICE_VER
+    DEVICE_ID = device_id or None
+    DEVICE_IP = device_ip or None
+    LOCAL_KEY = local_key or None
+    try:
+        DEVICE_VER = float(device_ver)
+    except Exception:
+        DEVICE_VER = 3.3
+
+def _check_tcp_connectivity(ip: str, port: int = DEFAULT_TUYA_PORT, timeout: float = 1.5) -> bool:
+    """Fast TCP connect test to detect unreachable IP/port (fails fast)."""
+    try:
+        if not ip:
+            return False
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+def is_reachable() -> bool:
+    """Public helper to quickly determine if the configured device is reachable.
+    Uses a small cache and a failure cooldown to avoid repeated slow attempts."""
+    global _last_failure_time, _reachability_cache_time, _reachability_cache_result
+
+    if not DEVICE_IP:
+        return False
+
+    now = time.time()
+    # If we had a recent failure within cooldown, don't try again yet
+    if _last_failure_time and (now - _last_failure_time) < _failure_cooldown:
+        return False
+
+    # Use cached reachable result if fresh
+    if (_reachability_cache_time and (now - _reachability_cache_time) < _reachability_cache_ttl):
+        return _reachability_cache_result
+
+    result = _check_tcp_connectivity(DEVICE_IP, DEFAULT_TUYA_PORT, timeout=1.5)
+    _reachability_cache_time = now
+    _reachability_cache_result = result
+    if not result:
+        _last_failure_time = now
+    return result
+
 # === Initialize the Tuya Bulb device ===
 def init_device():
     """Initialize the LED strip connection using configured values"""
     try:
+        # Quick pre-check: avoid instantiating tinytuya when device unreachable (tinytuya may block)
+        if not is_reachable():
+            log("warn", "[EliteLEDPlugin] LED device not reachable (fast-check). Skipping init.")
+            return None
+
+        if not DEVICE_ID or not DEVICE_IP or not LOCAL_KEY:
+            log("warn", "[EliteLEDPlugin] LED device configuration incomplete, skipping init.")
+            return None
+
         d = tinytuya.BulbDevice(DEVICE_ID, DEVICE_IP, LOCAL_KEY)
         d.set_version(DEVICE_VER)
+        # prefer persistent socket to avoid reconnect overhead when possible
         d.set_socketPersistent(True)
         return d
     except Exception as e:
+        # record failure time to apply cooldown/backoff
+        global _last_failure_time
+        _last_failure_time = time.time()
         log("error", f"[EliteLEDPlugin] Error connecting to LED device: {e}")
         return None
 
 # === Set LED color or scene ===
 def set_led(color: str, speed: str = "normal") -> bool:
-    """Set the LED strip to a color or scene"""
+    """Set the LED strip to a color or scene. Returns boolean success."""
+    # Quick reachable check before doing tinytuya calls
+    if not is_reachable():
+        log("warn", "[EliteLEDPlugin] LED device unreachable, skipping set_led.")
+        return False
+
     d = init_device()
     if not d:
         log("error", "[EliteLEDPlugin] LED device not initialized, skipping LED setting.")
@@ -117,14 +190,19 @@ def set_led(color: str, speed: str = "normal") -> bool:
             return True
         else:
             rgb = COLORS.get(color)
-            if rgb:
+            if isinstance(rgb, tuple):
                 d.set_mode('colour')
                 time.sleep(0.2)
                 d.set_colour(*rgb)
                 d.turn_on()
                 return True
+            # unknown color/scene
+            log("warn", f"[EliteLEDPlugin] Unknown color/scene requested: {color}")
             return False
     except Exception as e:
+        # record failure time to apply cooldown/backoff
+        global _last_failure_time
+        _last_failure_time = time.time()
         log("error", f"[EliteLEDPlugin] Error setting {color}: {e}")
         return False
 
