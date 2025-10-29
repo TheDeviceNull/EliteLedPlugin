@@ -1,1 +1,2 @@
 tinytuya>=1.0.0
+pyaes>=1.6.1
