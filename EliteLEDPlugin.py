@@ -1,423 +1,293 @@
-from typing import Any, Literal, override
-from dataclasses import dataclass, field
+# EliteLEDPlugin.py
+# Production-grade EliteLEDPlugin adapted to PluginHelper API
+# - Reads settings from self.settings.get(...)
+# - Dispatches PluginEvent with dict content
+# - set_led_color always returns a chat response (manual source)
+# - Game events only apply LED side-effect (source: "game") and do NOT cause assistant replies
+
+from __future__ import annotations
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from lib.PluginHelper import PluginHelper, PluginManifest
-from lib.PluginBase import PluginBase
-from lib.PluginSettingDefinitions import PluginSettings, SettingsGrid, TextSetting, ParagraphSetting, SelectSetting, SelectOption
+import threading
+import time
+from typing import Any, Dict, Tuple
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent / "deps"))
+import tinytuya
+from . import elite_led_controller as led
+
+from lib.PluginBase import PluginBase, PluginManifest
+from lib.PluginHelper import PluginHelper, PluginEvent
+from lib.PluginSettingDefinitions import (
+    PluginSettings, SettingsGrid, TextSetting, ParagraphSetting, SelectSetting
+)
 from lib.Event import Event, ProjectedEvent, GameEvent, StatusEvent
 from lib.EventManager import Projection
 from lib.Logger import log
-from . import elite_led_controller as led
-import sys
-import socket
-import threading
-from pathlib import Path
 
-# Add deps/ folder to sys.path (in case dependencies are vendored inside the plugin)
-sys.path.append(str(Path(__file__).parent / "deps"))
+__version__ = "3.3.0-production"
+RELEASE_TITLE = "Signal Nexus — Production"
 
-import tinytuya  # ensure tinytuya can be imported when bundled
-
-# --- Plugin logging configuration (edit this value to change verbosity) ---
-# Options: "DEBUG", "INFO", "WARN", "ERROR"
-# Default "ERROR" means in normal usage the plugin logs the least (only errors).
-PLUGIN_LOG_LEVEL = "ERROR"
-
-_LEVELS = {
-    "DEBUG": 10,
-    "INFO": 20,
-    "WARN": 30,
-    "ERROR": 40,
-}
+PLUGIN_LOG_LEVEL = "INFO"
+_LEVELS = {"DEBUG": 10, "INFO": 20, "WARN": 30, "ERROR": 40}
 
 def p_log(level: str, *args):
-    """Plugin-level filtered logger. Calls global log(...) only if level >= PLUGIN_LOG_LEVEL."""
     try:
         lvl = _LEVELS.get(level.upper(), 999)
         threshold = _LEVELS.get(PLUGIN_LOG_LEVEL.upper(), 999)
         if lvl >= threshold:
-            # forward to global logger preserving same signature
-            log(level, *args)
+            log(level, "[EliteLEDPlugin]", *args)
     except Exception:
-        # Failsafe: do not break plugin if logging fails
         try:
-            log("error", "[EliteLEDPlugin] logging failure", level, *args)
+            log("ERROR", "[EliteLEDPlugin] logging failure")
         except Exception:
             pass
 
-# Color options for the dropdowns
-color_options = [
-    {"key": c, "label": c.capitalize(), "value": c, "disabled": False}
-    for c in led.COLORS.keys()
-]
-
-# New release metadata
-__version__ = "2.0.1"
-RELEASE_TITLE = "Event Reactor"
-
-RELEASE_NOTES_EN = """Event Reactor — EliteLEDPlugin v2.0.1
-
-Improvements
-- Fast TCP reachability checks added for Tuya devices to fail fast when the device is offline.
-- Short-term caching of reachability checks and a cooldown/backoff after failures to reduce repeated blocking attempts.
-- Safer error handling: actions now verify device reachability and no longer report success if the device is unreachable.
-- Reduced chances of tinytuya causing main-thread blocking by skipping attempts when the device is clearly unreachable.
-- Added handling for FuelScoop / ReservoirReplenished events to better map start/end LED states.
-- Improved logging around LED operations to help diagnose connectivity issues.
-
-Fixes
-- Prevented misleading success responses when LED device is offline.
-- Avoided duplicate/projection loops by emitting LEDChangedEvent only on successful sets.
-- Reduced noisy retries and improved thread-safe LED operations.
-
-Notes
-- Verify plugin Tuya settings (Device ID, IP, Local Key, Device Version) after upgrading.
-- If the device is offline the plugin will return a clear message instead of claiming success.
-- No breaking changes expected for existing configurations.
-"""
-
-# === Custom LED Event ===
-@dataclass
-class LEDChangedEvent(Event):
-    new_color: str
-    speed: str = "normal"
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    kind: Literal['tool'] = 'tool'
-    processed_at: float = field(default=0.0)
-    text: list[str] = field(default_factory=list)
-    memorized_at: str = None # to be set when event is memorized by the COVAS:NEXT system
-    responded_at: str = None # to be set when event is responded to by the COVAS:NEXT system
-
-    def __post_init__(self):
-        self.text = [f"LED changed to {self.new_color} (speed={self.speed})"]
-
-    def __str__(self) -> str:
-        return self.text[0]
-
-# === LED State Projection ===
-class CurrentLEDState(Projection[dict[str, Any]]):
-    def get_default_state(self) -> dict[str, Any]:
-        return {"event": "LEDState", "color": "off", "speed": "normal"}
+# --- Projection for current LED state ---
+class CurrentLEDState(Projection[Dict[str, Any]]):
+    def get_default_state(self) -> Dict[str, Any]:
+        return {
+            "event": "LEDState",
+            "color": "off",
+            "speed": "normal",
+            "last_update": None
+        }
 
     def process(self, event: Event) -> list[ProjectedEvent]:
         projected: list[ProjectedEvent] = []
-        if isinstance(event, LEDChangedEvent):
-            self.state["color"] = event.new_color
-            self.state["speed"] = event.speed
-            projected.append(ProjectedEvent({
-                "event": "LEDChanged",
-                "new_color": event.new_color,
-                "speed": event.speed
-            }))
+        if isinstance(event, PluginEvent) and getattr(event, "plugin_event_name", "") == "LEDChanged":
+            data = event.plugin_event_content or {}
+            new_color = data.get("new_color", "off")
+            speed = data.get("speed", "normal")
+            ts = data.get("timestamp", datetime.now(timezone.utc).isoformat())
+            self.state.update({"color": new_color, "speed": speed, "last_update": ts})
+            pe = ProjectedEvent(content={"event": "LEDChanged", "new_color": new_color, "speed": speed, "timestamp": ts})
+            pe.processed_at = time.time()
+            projected.append(pe)
         return projected
 
-# === Main Plugin Class ===
+# --- Main Plugin ---
 class EliteLEDPlugin(PluginBase):
     def __init__(self, plugin_manifest: PluginManifest):
-        super().__init__(plugin_manifest, event_classes=[LEDChangedEvent])
-
-        # Initialize thread lock for LED operations
+        super().__init__(plugin_manifest)
         self._led_lock = threading.Lock()
+        self._worker_threads: list[threading.Thread] = []
+        self._stop_workers = False
 
-        # === Plugin Settings ===
-        self.settings_config: PluginSettings | None = PluginSettings(
+        try:
+            color_keys = list(led.COLORS.keys())
+        except Exception:
+            color_keys = ["off", "white"]
+        self.color_options = [{"key": c, "label": c.capitalize(), "value": c, "disabled": False} for c in color_keys]
+
+        self.settings_config = PluginSettings(
             key="EliteLEDController",
             label="Elite LED Controller",
             icon="lightbulb",
             grids=[
-                # LED control info (optional paragraph)
-                SettingsGrid(
-                    key="info",
-                    label="Info",
-                    fields=[
-                        ParagraphSetting(
-                            key="intro",
-                            label="Introduction",
-                            type="paragraph",
-                            readonly=True,
-                            content="Configure your Tuya LED device below. These settings allow the plugin to communicate with your LED strip."
-                        )
-                    ]
-                ),
-                # Tuya device configuration
                 SettingsGrid(
                     key="tuya_device",
                     label="Tuya Device Configuration",
                     fields=[
-                        ParagraphSetting(
-                            key="tuya_desc",
-                            label="Description",
-                            type="paragraph",
-                            readonly=True,
-                            content="Enter your Tuya device ID, IP, local key and device version so the plugin can connect to your LED device. Leave blank to skip device connection."
-                        ),
-                        TextSetting(key="device_id", label="Device ID", type="text", placeholder="Enter Tuya Device ID", default_value=""),
-                        TextSetting(key="device_ip", label="Device IP", type="text", placeholder="Enter Tuya Device IP", default_value=""),
-                        TextSetting(key="local_key", label="Local Key", type="text", placeholder="Enter Tuya Local Key", default_value=""),
-                        TextSetting(key="device_ver", label="Device Version", type="text", placeholder="Tuya Device Version", default_value="3.3"),
+                        ParagraphSetting(key="tuya_desc", label="Description", readonly=True, type="paragraph",
+                                         content="Enter Device ID, IP, Local Key and Version to enable the Tuya LED strip."),
+                        TextSetting(key="device_id", label="Device ID", type="text"),
+                        TextSetting(key="device_ip", label="Device IP", type="text"),
+                        TextSetting(key="local_key", label="Local Key", type="text"),
+                        TextSetting(key="device_ver", label="Device Version", type="text", default_value="3.3"),
                     ]
                 ),
-                # Event to LED color mapping - add "default" color?
                 SettingsGrid(
                     key="event_colors",
                     label="Event LED Colors",
                     fields=[
-                        ParagraphSetting(
-                            key="event_colors_desc",
-                            label="Description",
-                            type="paragraph",
-                            readonly=True,
-                            content="Choose the color or scene for each game event. The selected color will be applied automatically when the corresponding in-game event occurs."
-                        ),
-                        SelectSetting(key="StartJump", label="FSDJump Color", type="select", default_value="fsd_jump", select_options=color_options),
-                        SelectSetting(key="DockingGranted", label="DockingGranted Color", type="select", default_value="white", select_options=color_options),
-                        SelectSetting(key="Undocked", label="Undocked Color", type="select", default_value="yellow", select_options=color_options),
-                        SelectSetting(key="UnderAttack", label="UnderAttack Color", type="select", default_value="red_alert", select_options=color_options),
-                        SelectSetting(key="Docked", label="Docked Color", type="select", default_value="white", select_options=color_options),
-                        SelectSetting(key="FuelScoopStart", label="FuelScoopStart Color", type="select", default_value="breathing_yellow", select_options=color_options),
-                        SelectSetting(key="FuelScoopEnd", label="FuelScoopEnd Color", type="select", default_value="white", select_options=color_options),
+                        ParagraphSetting(key="event_colors_desc", label="Description", readonly=True, type="paragraph",
+                                         content="Assign a color or scene to each Elite Dangerous event."),
+                        SelectSetting(key="StartJump", label="FSDJump Color", type="select", default_value="fsd_jump", select_options=self.color_options),
+                        SelectSetting(key="DockingGranted", label="DockingGranted Color", type="select", default_value="white", select_options=self.color_options),
+                        SelectSetting(key="Undocked", label="Undocked Color", type="select", default_value="yellow", select_options=self.color_options),
+                        SelectSetting(key="UnderAttack", label="UnderAttack Color", type="select", default_value="red_alert", select_options=self.color_options),
+                        SelectSetting(key="Docked", label="Docked Color", type="select", default_value="white", select_options=self.color_options),
+                        SelectSetting(key="FuelScoopStart", label="FuelScoopStart Color", type="select", default_value="breathing_yellow", select_options=self.color_options),
+                        SelectSetting(key="FuelScoopEnd", label="FuelScoopEnd Color", type="select", default_value="white", select_options=self.color_options),
                     ]
-                )   
+                )
             ]
         )
-    # === Called when plugin helper is ready: configure LED device dynamically ===
-    @override
-    def on_plugin_helper_ready(self, helper: PluginHelper):
-        # Read values from plugin UI
-        device_id = helper.get_plugin_setting("EliteLEDController", "tuya_device", "device_id") or ""
-        device_ip = helper.get_plugin_setting("EliteLEDController", "tuya_device", "device_ip") or ""
-        local_key = helper.get_plugin_setting("EliteLEDController", "tuya_device", "local_key") or ""
-        device_ver_str = helper.get_plugin_setting("EliteLEDController", "tuya_device", "device_ver") or "3.3"
 
+        self._event_led_map: Dict[str, Tuple[str, str]] = {}
+
+    # --- Utility to read settings ---
+    def _get_setting(self, key: str, default: Any = None) -> Any:
         try:
-            device_ver = float(device_ver_str)
-        except ValueError:
+            if hasattr(self, "settings") and self.settings is not None:
+                val = self.settings.get(key, None)
+                if val not in (None, ""):
+                    return val
+                if "." not in key:
+                    for prefix in ("tuya_device", "event_colors", ""):
+                        composed = f"{prefix}.{key}" if prefix else key
+                        val = self.settings.get(composed, None)
+                        if val not in (None, ""):
+                            return val
+        except Exception:
+            pass
+        return default
+
+    # --- Configure Tuya & event mapping ---
+    def on_plugin_helper_ready(self, helper: PluginHelper):
+        device_id = self._get_setting("device_id", "")
+        device_ip = self._get_setting("device_ip", "")
+        local_key = self._get_setting("local_key", "")
+        try:
+            device_ver = float(self._get_setting("device_ver", "3.3"))
+        except Exception:
             device_ver = 3.3
+        try:
+            led.configure(device_id=device_id, device_ip=device_ip, local_key=local_key, device_ver=device_ver)
+            p_log("INFO", f"Configured LED controller (ver={device_ver}) id={device_id} ip={device_ip}")
+        except Exception as e:
+            p_log("ERROR", f"Failed to configure led controller: {e}")
 
-        # Configure elite_led_controller with user-provided settings
-        led.configure(device_id=device_id, device_ip=device_ip, local_key=local_key, device_ver=device_ver)
-        p_log("DEBUG", f"[EliteLEDPlugin] Tuya device configured: ID={device_id}, IP={device_ip}, Ver={device_ver}")
-
-        # Events to be added (modified): StartJump (FSDJump), FuelScoopStart (FuelScoop), FuelScoopEnd (FuelScoop - new color?)
-        # Add default led color
-        event_colors = {
-            "StartJump": helper.get_plugin_setting("EliteLEDController", "event_colors", "StartJump") or "fsd_jump",
-            "DockingGranted": helper.get_plugin_setting("EliteLEDController", "event_colors", "DockingGranted") or "white",
-            "Undocked": helper.get_plugin_setting("EliteLEDController", "event_colors", "Undocked") or "yellow",
-            "UnderAttack": helper.get_plugin_setting("EliteLEDController", "event_colors", "UnderAttack") or "red_alert",
-            "Docked": helper.get_plugin_setting("EliteLEDController", "event_colors", "Docked") or "white",
-            "FuelScoopStart": helper.get_plugin_setting("EliteLEDController", "event_colors", "FuelScoopStart") or "breathing_yellow",
-            "FuelScoopEnd": helper.get_plugin_setting("EliteLEDController", "event_colors", "FuelScoopEnd") or "white",
+        # Build event->LED mapping
+        self._event_led_map = {
+            "LoadGame": (self._get_setting("LoadGame", "white"), "normal"),
+            "Shutdown": (self._get_setting("Shutdown", "white"), "normal"),
+            "StartJump": (self._get_setting("StartJump", "fsd_jump"), "normal"),
+            "DockingGranted": (self._get_setting("DockingGranted", "white"), "normal"),
+            "Undocked": (self._get_setting("Undocked", "yellow"), "normal"),
+            "UnderAttack": (self._get_setting("UnderAttack", "red_alert"), "fast"),
+            "Docked": (self._get_setting("Docked", "white"), "normal"),
+            "FuelScoopStart": (self._get_setting("FuelScoopStart", "breathing_yellow"), "normal"),
+            "FuelScoopEnd": (self._get_setting("FuelScoopEnd", "white"), "normal"),
         }
 
-        # === Elite Dangerous Events → LED Mapping ===
-        global EVENT_LED_MAP
-        # Events to be added (modified): StartJump (FSDJump), FuelScoopStart (FuelScoop), FuelScoopEnd (FuelScoop - new color?)
-        # Add "hidden" event to be used as "default led color"
-        EVENT_LED_MAP = {
-            "LoadGame": ("white", "normal"),  # led reset to white on game load
-            "Shutdown": ("white", "normal"),  # led white on game exit
-            "UnderAttack": (event_colors["UnderAttack"], "fast"),
-            "StartJump": (event_colors["StartJump"], "normal"),
-            "DockingGranted": (event_colors["DockingGranted"], "normal"),
-            "Docked": (event_colors["Docked"], "normal"),
-            "FuelScoopStart": (event_colors["FuelScoopStart"], "normal"),
-            "Undocked": (event_colors["Undocked"], "normal"),
-            "FuelScoopEnd": (event_colors["FuelScoopEnd"], "normal"), # custom event for FuelScoop end
-        }
+    # --- On chat start ---
+    def on_chat_start(self, helper: PluginHelper):
+        self.on_plugin_helper_ready(helper)
+        self.register_actions(helper)
+        helper.register_projection(CurrentLEDState())
+        helper.register_status_generator(lambda states: [("Current LED state", states.get("CurrentLEDState", {}))])
 
-    # === Action to set LED manually ===
+        # Sideeffect: handle game/status events
+        def sideeffect(event: Event, states: Dict[str, Dict]):
+            try:
+                self.handle_game_event(helper, event, states)
+            except Exception as e:
+                log("error", f"[EliteLEDPlugin] Sideeffect error: {e}")
+
+        helper.register_sideeffect(sideeffect)
+
+        # Event for LLM: only reply for manual
+        helper.register_event(
+            name="LEDChanged",
+            should_reply_check=self._should_reply_to_led_event,
+            prompt_generator=self._generate_led_prompt
+        )
+
+        p_log("INFO", "EliteLEDPlugin ready")
+
+    def on_chat_stop(self, helper: PluginHelper):
+        self._stop_workers = True
+        for t in list(self._worker_threads):
+            try:
+                if t.is_alive():
+                    t.join(timeout=0.5)
+            except Exception:
+                pass
+        p_log("INFO", "EliteLEDPlugin stopped")
+
+    # --- Actions ---
     def register_actions(self, helper: PluginHelper):
         helper.register_action(
             "set_led_color",
             "Set the LED strip to a color or scene",
-            {
-                "type": "object",
-                "properties": {
-                    "color": {"type": "string", "enum": list(led.COLORS.keys())},
-                    "speed": {"type": "string", "enum": list(led.SPEEDS.keys())}
-                },
-                "required": ["color"]
-            },
+            {"type": "object", "properties": {"color": {"type": "string", "enum": list(led.COLORS.keys())},
+                                              "speed": {"type": "string", "enum": list(led.SPEEDS.keys())}},
+             "required": ["color"]},
             lambda args, states: self.set_led(args, states, helper),
             "global"
         )
-# === Projection for current LED state ===
-    def register_projections(self, helper: PluginHelper):
-        helper.register_projection(CurrentLEDState())
-# === Status generator for current LED state ===
-    def register_status_generators(self, helper: PluginHelper):
-        helper.register_status_generator(
-            lambda states: [("Current LED state", states.get("CurrentLEDState", {}))]
-        )
-# === Should-reply handler to process game events for LED changes ===
-    def register_should_reply_handlers(self, helper: PluginHelper):
-        # Do not perform side-effects from the should_reply handler.
-        # Return None to leave reply decision to the assistant (avoid duplicate handling).
-        helper.register_should_reply_handler(lambda event, states: None)
 
-# === Side-effect to apply LED changes based on game events ===
-    def register_sideeffects(self, helper: PluginHelper):
-        # React to events by applying LED side-effects only here (no duplicate calls from should_reply).
-        def _sideeffect_apply(event: Event, states: dict[str, dict]):
-            try:
-                # Delegate to the same handler used previously which applies LEDs and returns status
-                self.handle_game_event(helper, event, states)
-            except Exception as e:
-                log("error", f"[EliteLEDPlugin] Sideeffect handler error: {e}")
-
-        helper.register_sideeffect(_sideeffect_apply)
-
-    # === Core LED logic ===
-    def set_led(self, args: dict[str, Any], states: dict[str, dict], helper: PluginHelper) -> str:
-        color = args["color"]
+    def set_led(self, args: Dict[str, Any], states: Dict[str, Dict], helper: PluginHelper) -> str:
+        color = args.get("color")
         speed = args.get("speed", "normal")
+        if not color:
+            return "Missing color."
         try:
-            # Fast check: avoid queuing/claiming success if device is unreachable
-            try:
-                reachable = led.is_reachable()
-            except Exception:
-                reachable = False
-            if not reachable:
-                log("warn", f"[EliteLEDPlugin] set_led aborted: device unreachable, color={color}")
-                return "LED device unreachable; check IP/configuration and try again."
-            # queue async worker as before
-            self._apply_led(color, speed, helper, states)
-            return "LED set queued."
-        except Exception as e:
-            log("error", f"[EliteLEDPlugin] Error setting LED: {e}")
-            return f"Error setting LED: {e}"
-        
-# === Main event handler to process game events and set LEDs ===
-    def handle_game_event(self, helper: PluginHelper, event: Event, states: dict[str, dict]) -> bool | None:
-        # Ignore projected LEDChanged events to avoid loops
+            if not led.is_reachable():
+                p_log("WARN", "Device unreachable (action).")
+                return "LED device unreachable; check IP/configuration."
+        except Exception:
+            return "LED device unreachable; check IP/configuration."
+        self._apply_led(color, speed, helper, states, source="manual")
+        return f"LED update queued: color={color}, speed={speed}"
+
+    # --- Handle game/status events ---
+    def handle_game_event(self, helper: PluginHelper, event: Event, states: Dict[str, Dict]):
         if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged":
-            p_log("DEBUG", "[EliteLEDPlugin] Ignored projected LEDChanged event to avoid loop.")
-            return None
-
-        # Determine event name from GameEvent (journal) or StatusEvent (status-derived)
-        event_name = None
-        payload = None
-        if isinstance(event, GameEvent):
-            payload = event.content if getattr(event, "content", None) else {}
-            event_name = payload.get("event")
-        elif isinstance(event, StatusEvent):
-            payload = event.status if getattr(event, "status", None) else {}
-            event_name = payload.get("event")
-        else:
-            # Not a Game or Status event; ignore
-            return None
-
-        # If event is not something we know about (and not one of our special cases), ignore
-        if not event_name:
-            return None
-
-        # Map/normalize some status names to the event colors keys used in settings
-        # Settings use FuelScoopStart / FuelScoopEnd; StatusParser emits FuelScoopStarted/FuelScoopEnded
-        # Journal emits "FuelScoop" and "ReservoirReplenished"
-        # Handle FuelScoop (journal) specially based on Scooped value
-        if event_name == "FuelScoop":
-            scooped = 0
-            if isinstance(payload, dict):
-                scooped = payload.get("Scooped", 0) or 0
-            if scooped > 0:
-                color, speed = EVENT_LED_MAP.get("FuelScoopStart", ("breathing_yellow", "normal"))
-                p_log("DEBUG", f"[EliteLEDPlugin] FuelScoop journal: scooped={scooped}, applying start color {color}")
-                try:
-                    self._apply_led(color, speed, helper, states)
-                    return True
-                except Exception as e:
-                    log("error", f"[EliteLEDPlugin] Exception setting LED for FuelScoop: {e}")
-                    return None
-            else:
-                # scooped == 0 treat as end
-                color, speed = EVENT_LED_MAP.get("FuelScoopEnd", ("white", "normal"))
-                try:
-                    self._apply_led(color, speed, helper, states)
-                    return True
-                except Exception as e:
-                    log("error", f"[EliteLEDPlugin] Exception setting LED for FuelScoop end: {e}")
-                    return None
-                
-# Handle ReservoirReplenished as FuelScoop end
-        if event_name == "ReservoirReplenished":
-            color, speed = EVENT_LED_MAP.get("FuelScoopEnd", ("white", "normal"))
-            p_log("DEBUG", f"[EliteLEDPlugin] ReservoirReplenished -> applying end color {color}")
-            try:
-                self._apply_led(color, speed, helper, states)
-                return True
-            except Exception as e:
-                log("error", f"[EliteLEDPlugin] Exception setting LED for ReservoirReplenished: {e}")
-                return None
-
-        # Status-derived names from StatusParser (FuelScoopStarted / FuelScoopEnded)
-        if event_name in ("FuelScoopStarted", "FuelScoopStarted"):
-            color, speed = EVENT_LED_MAP.get("FuelScoopStart", ("breathing_yellow", "normal"))
-            p_log("DEBUG", f"[EliteLEDPlugin] Status event {event_name} -> start color {color}")
-            try:
-                self._apply_led(color, speed, helper, states)
-                return True
-            except Exception as e:
-                log("error", f"[EliteLEDPlugin] Exception setting LED for {event_name}: {e}")
-                return None
-
-        if event_name in ("FuelScoopEnded", "FuelScoopEnded"):
-            color, speed = EVENT_LED_MAP.get("FuelScoopEnd", ("white", "normal"))
-            p_log("DEBUG", f"[EliteLEDPlugin] Status event {event_name} -> end color {color}")
-            try:
-                self._apply_led(color, speed, helper, states)
-                return True
-            except Exception as e:
-                log("error", f"[EliteLEDPlugin] Exception setting LED for {event_name}: {e}")
-                return None
-
-        # Fallback to original mapping for other events
-        if event_name not in EVENT_LED_MAP:
-            p_log("DEBUG", f"[EliteLEDPlugin] Ignored non-Elite event: {event_name}")
-            return None
-
-        color, speed = EVENT_LED_MAP[event_name]
-        p_log("DEBUG", f"[EliteLEDPlugin] Game/Status event '{event_name}' with LED '{color}'")
-        try:
-            self._apply_led(color, speed, helper, states)
-            return True
-        except socket.timeout:
-            log("error", "[EliteLEDPlugin] Timeout while communicating with LED device.")
-            return False
-        except Exception as e:
-            log("error", f"[EliteLEDPlugin] Exception setting LED for event '{event_name}': {e}")
-            return None
-
-    def _apply_led(self, color: str, speed: str, helper: PluginHelper, states: dict[str, dict]) -> str:
-        p_log("DEBUG", f"[EliteLEDPlugin] Entered in _apply_led with color={color}, speed={speed}")
-        current_state = states.get("CurrentLEDState", {})
-        p_log("DEBUG", f"[EliteLEDPlugin] Current LED state: {current_state}")
-
-        if current_state.get("color") == color and current_state.get("speed") == speed:
-            p_log("DEBUG", f"[EliteLEDPlugin] LED already set to {color} (speed={speed}), skipping.")
             return
-        def worker():
-            try:
-                # Fast pre-check: if device unreachable skip immediately (tinytuya may block otherwise)
-                if not led.is_reachable():
-                    p_log("WARN", f"[EliteLEDPlugin] LED device unreachable, skipping attempt to set {color}.")
-                    return
+        event_name = getattr(event, "content", {}).get("event") or getattr(event, "status", {}).get("event")
+        if not event_name:
+            return
+        key = event_name
+        if event_name == "FuelScoop":
+            scooped = getattr(event, "content", {}).get("Scooped", 0)
+            key = "FuelScoopStart" if scooped > 0 else "FuelScoopEnd"
+        if key in self._event_led_map:
+            color, speed = self._event_led_map[key]
+            self._apply_led(color, speed, helper, states, source="game")
 
+    # --- Internal LED application ---
+    def _apply_led(self, color: str, speed: str, helper: PluginHelper, states: Dict[str, Dict], source: str = "game"):
+        try:
+            current_state = states.get("CurrentLEDState", {})
+            if current_state.get("color") == color and current_state.get("speed") == speed:
+                return
+        except Exception:
+            pass
+
+        def worker():
+            threading.current_thread().name = f"LEDWorker-{color}-{int(time.time())}"
+            try:
                 with self._led_lock:
                     success = led.set_led(color, speed)
-                if success:
-                    p_log("INFO", f"[EliteLEDPlugin] LED set to {color}")
-                    try:
-                        emit = getattr(helper, "emit_event", None)
-                        if callable(emit):
-                            emit(LEDChangedEvent(new_color=color, speed=speed))
-                        else:
-                            helper.put_incoming_event(LEDChangedEvent(new_color=color, speed=speed))
-                    except Exception as e:
-                        log("error", f"[EliteLEDPlugin] Emitting LEDChangedEvent failed: {e}")
-                else:
-                    log("error", f"[EliteLEDPlugin] Error setting LED to {color}")
             except Exception as e:
-                log("error", f"[EliteLEDPlugin] Exception setting LED: {e}")
+                p_log("ERROR", f"Exception while setting LED: {e}")
+                success = False
+            if success:
+                evt = PluginEvent(
+                    plugin_event_name="LEDChanged",
+                    plugin_event_content={
+                        "new_color": color,
+                        "speed": speed,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "source": source
+                    },
+                    processed_at=time.time()
+                )
+                helper.dispatch_event(evt)
 
-        threading.Thread(target=worker, name=f"LEDSet-{color}", daemon=True).start()
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        self._worker_threads.append(t)
+
+    # --- Assistant reply policy ---
+    def _should_reply_to_led_event(self, event: PluginEvent) -> bool:
+        try:
+            content = event.plugin_event_content or {}
+            return content.get("source", "game") == "manual"
+        except Exception:
+            return False
+
+    def _generate_led_prompt(self, event: PluginEvent) -> str:
+        try:
+            content = event.plugin_event_content or {}
+            color = content.get("new_color", "unknown")
+            speed = content.get("speed", "normal")
+            ts = content.get("timestamp", "")
+            return f"NOTICE: LED updated to '{color}' (speed={speed}) at {ts}. Reply with a short acknowledgment."
+        except Exception:
+            return "NOTICE: LED updated. Reply with a short acknowledgment."
