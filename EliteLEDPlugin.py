@@ -56,17 +56,13 @@ class CurrentLEDState(Projection[Dict[str, Any]]):
         }
 
     def process(self, event: Event) -> list[ProjectedEvent]:
-        projected: list[ProjectedEvent] = []
         if isinstance(event, PluginEvent) and getattr(event, "plugin_event_name", "") == "LEDChanged":
             data = event.plugin_event_content or {}
             new_color = data.get("new_color", "off")
             speed = data.get("speed", "normal")
             ts = data.get("timestamp", datetime.now(timezone.utc).isoformat())
             self.state.update({"color": new_color, "speed": speed, "last_update": ts})
-            pe = ProjectedEvent(content={"event": "LEDChanged", "new_color": new_color, "speed": speed, "timestamp": ts})
-            pe.processed_at = time.time()
-            projected.append(pe)
-        return projected
+        return []  # No need to create additional projected events
 
 # --- Main Plugin ---
 class EliteLEDPlugin(PluginBase):
