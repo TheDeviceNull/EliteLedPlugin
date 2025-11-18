@@ -229,13 +229,30 @@ class EliteLEDPlugin(PluginBase):
     def handle_game_event(self, helper: PluginHelper, event: Event, states: Dict[str, Dict]):
         if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged":
             return
-        event_name = getattr(event, "content", {}).get("event") or getattr(event, "status", {}).get("event")
+    
+        event_name = None
+    
+        # Handle content attribute properly
+        content = getattr(event, "content", None)
+        if isinstance(content, dict):
+            event_name = content.get("event")
+    
+        # If no event_name found yet, try status attribute
+        if not event_name:
+            status = getattr(event, "status", None)
+            if isinstance(status, dict):
+                event_name = status.get("event")
+    
         if not event_name:
             return
+        
         key = event_name
         if event_name == "FuelScoop":
-            scooped = getattr(event, "content", {}).get("Scooped", 0)
-            key = "FuelScoopStart" if scooped > 0 else "FuelScoopEnd"
+            # Make sure content is a dict before accessing
+            if isinstance(content, dict):
+                scooped = content.get("Scooped", 0)
+                key = "FuelScoopStart" if scooped > 0 else "FuelScoopEnd"
+    
         if key in self._event_led_map:
             color, speed = self._event_led_map[key]
             self._apply_led(color, speed, helper, states, source="game")
