@@ -171,32 +171,30 @@ class EliteLEDPlugin(PluginBase):
         helper.register_status_generator(lambda states: [("Current LED state", states.get("CurrentLEDState", {}))])
 
         # Sideeffect: handle game/status events
-        def sideeffect(event: Event, states: Dict[str, Dict]):
+        def sideeffect(event, states):
             try:
-                self.handle_game_event(helper, event, states)
+                # Determina se l'evento è un StatusEvent o un altro tipo di evento
+                if hasattr(event, "kind") and event.kind == "status" and hasattr(event, "status"):
+                    # È un StatusEvent
+                    status_event = event.status.get("event") if isinstance(event.status, dict) else None
+                    self.handle_game_event(helper, status_event, states)
+                else:
+                    # È un altro tipo di evento
+                    self.handle_game_event(helper, event, states)
             except Exception as e:
                 log("error", f"[EliteLEDPlugin] Sideeffect error: {e}")
 
         helper.register_sideeffect(sideeffect)
-
-        # Event for LLM: only reply for manual
-        #helper.register_event(
-        #    name="LEDChanged",
-        #    should_reply_check=self._should_reply_to_led_event,
-        #    prompt_generator=self._generate_led_prompt
-        #)
-
         p_log("INFO", "EliteLEDPlugin ready")
-
-    def on_chat_stop(self, helper: PluginHelper):
-        self._stop_workers = True
-        for t in list(self._worker_threads):
-            try:
-                if t.is_alive():
-                    t.join(timeout=0.5)
-            except Exception:
-                pass
-        p_log("INFO", "EliteLEDPlugin stopped")
+        def on_chat_stop(self, helper: PluginHelper):
+            self._stop_workers = True
+            for t in list(self._worker_threads):
+                try:
+                    if t.is_alive():
+                        t.join(timeout=0.5)
+                except Exception:
+                    pass
+            p_log("INFO", "EliteLEDPlugin stopped")
 
     # --- Actions ---
     def register_actions(self, helper: PluginHelper):
@@ -225,8 +223,8 @@ class EliteLEDPlugin(PluginBase):
         return f"LED update queued: color={color}, speed={speed}"
 
     # --- Handle game/status events ---
-    def handle_game_event(self, helper: PluginHelper, event: Event, states: Dict[str, Dict]):
-        if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged":
+    def handle_game_event(self, helper: PluginHelper, event, states: Dict[str, Dict]):
+        if hasattr(event, "content") and isinstance(event.content, dict) and event.content.get("event") == "LEDChanged":
             return
     
         event_name = None
@@ -237,23 +235,20 @@ class EliteLEDPlugin(PluginBase):
             event_name = content.get("event")
     
         # If no event_name found yet, try status attribute
-        if not event_name:
-            status = getattr(event, "status", None)
-            if isinstance(status, dict):
-                event_name = status.get("event")
-        if not event_name and isinstance(status, dict):
-            event_name = status.get("event")    
+        if not event_name and hasattr(event, "status") and isinstance(event.status, dict):
+            event_name = event.status.get("event")
+    
         if not event_name:
             return
-        
+    
         key = event_name
-        # --- Gestione FuelScoopStarted / FuelScoopEnded ---
+    
+        # Handle FuelScoopStarted / FuelScoopEnded
         if event_name in ("FuelScoopStarted", "FuelScoopEnded"):
             p_log("DEBUG", f"[EliteLEDPlugin] Detected {event_name} event")
-            key = event_name  # usa direttamente come chiave
+            key = "FuelScoopStart" if event_name == "FuelScoopStarted" else "FuelScoopEnd"
         elif event_name == "FuelScoop":
             p_log("DEBUG", "[EliteLEDPlugin] Processing FuelScoop event")
-            # Make sure content is a dict before accessing
             if isinstance(content, dict):
                 scooped = content.get("Scooped", 0)
                 key = "FuelScoopStart" if scooped > 0 else "FuelScoopEnd"
