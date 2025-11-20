@@ -168,23 +168,15 @@ class EliteLEDPlugin(PluginBase):
         helper.register_status_generator(lambda states: [("Current LED state", states.get("CurrentLEDState", {}))])
 
         # Sideeffect: handle game/status events
-        def sideeffect(event: Event, states: Dict[str, Dict]):
+ 
+        def sideeffect(event, states):
             try:
                 self.handle_game_event(helper, event, states)
             except Exception as e:
                 log("error", f"[EliteLEDPlugin] Sideeffect error: {e}")
 
         helper.register_sideeffect(sideeffect)
-
-        # Event for LLM: only reply for manual
-        helper.register_event(
-            name="LEDChanged",
-            should_reply_check=self._should_reply_to_led_event,
-            prompt_generator=self._generate_led_prompt
-        )
-
         p_log("INFO", "EliteLEDPlugin ready")
-
     def on_chat_stop(self, helper: PluginHelper):
         self._stop_workers = True
         for t in list(self._worker_threads):
@@ -222,32 +214,36 @@ class EliteLEDPlugin(PluginBase):
         return f"LED update queued: color={color}, speed={speed}"
 
     # --- Handle game/status events ---
-    def handle_game_event(self, helper: PluginHelper, event: Event, states: Dict[str, Dict]):
-        if isinstance(event, ProjectedEvent) and event.content.get("event") == "LEDChanged":
+    def handle_game_event(self, helper, event, states):
+        if hasattr(event, "content") and isinstance(event.content, dict) and event.content.get("event") == "LEDChanged":
             return
     
         event_name = None
     
-        # Handle content attribute properly
-        content = getattr(event, "content", None)
-        if isinstance(content, dict):
-            event_name = content.get("event")
+        # Check if this is a status event with FuelScoopStarted/FuelScoopEnded
+        if hasattr(event, "status") and isinstance(event.status, dict) and "event" in event.status:
+            event_name = event.status["event"]
     
-        # If no event_name found yet, try status attribute
-        if not event_name:
-            status = getattr(event, "status", None)
-            if isinstance(status, dict):
-                event_name = status.get("event")
+        # If not a status event, check if it's a regular game event
+        if not event_name and hasattr(event, "content") and isinstance(event.content, dict):
+            event_name = event.content.get("event")
     
         if not event_name:
             return
-        
+    
         key = event_name
-        if event_name == "FuelScoop":
-            # Make sure content is a dict before accessing
+    
+        # Handle FuelScoopStarted / FuelScoopEnded
+        if event_name in ("FuelScoopStarted", "FuelScoopEnded"):
+            p_log("DEBUG", f"Detected {event_name} event")
+            key = "FuelScoopStart" if event_name == "FuelScoopStarted" else "FuelScoopEnd"
+        elif event_name == "FuelScoop":
+            p_log("DEBUG", "Processing FuelScoop event")
+            content = getattr(event, "content", {})
             if isinstance(content, dict):
                 scooped = content.get("Scooped", 0)
                 key = "FuelScoopStart" if scooped > 0 else "FuelScoopEnd"
+                p_log("DEBUG", f"FuelScoop event detected, scooped={scooped}, key={key}")
     
         if key in self._event_led_map:
             color, speed = self._event_led_map[key]
