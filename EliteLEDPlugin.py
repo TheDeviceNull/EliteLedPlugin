@@ -30,7 +30,7 @@ from lib.Logger import log
 __version__ = "3.3.0-production"
 RELEASE_TITLE = "Signal Nexus — Production"
 
-PLUGIN_LOG_LEVEL = "DEBUG"
+PLUGIN_LOG_LEVEL = "INFO"
 _LEVELS = {"DEBUG": 10, "INFO": 20, "WARN": 30, "ERROR": 40}
 
 def p_log(level: str, *args):
@@ -71,8 +71,6 @@ class EliteLEDPlugin(PluginBase):
         self._led_lock = threading.Lock()
         self._worker_threads: list[threading.Thread] = []
         self._stop_workers = False
-        # Track fuel scoop status changes
-        self._scoop_active_last: bool = False        
 
         try:
             color_keys = list(led.COLORS.keys())
@@ -116,7 +114,6 @@ class EliteLEDPlugin(PluginBase):
         )
 
         self._event_led_map: Dict[str, Tuple[str, str]] = {}
-
 
     # --- Utility to read settings ---
     def _get_setting(self, key: str, default: Any = None) -> Any:
@@ -180,11 +177,11 @@ class EliteLEDPlugin(PluginBase):
         helper.register_sideeffect(sideeffect)
 
         # Event for LLM: only reply for manual
-        #helper.register_event(
-        #    name="LEDChanged",
-        #    should_reply_check=self._should_reply_to_led_event,
-        #    prompt_generator=self._generate_led_prompt
-        #)
+        helper.register_event(
+            name="LEDChanged",
+            should_reply_check=self._should_reply_to_led_event,
+            prompt_generator=self._generate_led_prompt
+        )
 
         p_log("INFO", "EliteLEDPlugin ready")
 
@@ -241,23 +238,16 @@ class EliteLEDPlugin(PluginBase):
             status = getattr(event, "status", None)
             if isinstance(status, dict):
                 event_name = status.get("event")
-        if not event_name and isinstance(status, dict):
-            event_name = status.get("event")    
+    
         if not event_name:
             return
         
         key = event_name
-        # --- Gestione FuelScoopStarted / FuelScoopEnded ---
-        if event_name in ("FuelScoopStarted", "FuelScoopEnded"):
-            p_log("DEBUG", f"[EliteLEDPlugin] Detected {event_name} event")
-            key = event_name  # usa direttamente come chiave
-        elif event_name == "FuelScoop":
-            p_log("DEBUG", "[EliteLEDPlugin] Processing FuelScoop event")
+        if event_name == "FuelScoop":
             # Make sure content is a dict before accessing
             if isinstance(content, dict):
                 scooped = content.get("Scooped", 0)
                 key = "FuelScoopStart" if scooped > 0 else "FuelScoopEnd"
-                p_log("DEBUG", f"[EliteLEDPlugin] FuelScoop event detected, scooped={scooped}, key={key}")
     
         if key in self._event_led_map:
             color, speed = self._event_led_map[key]
@@ -277,9 +267,8 @@ class EliteLEDPlugin(PluginBase):
             try:
                 with self._led_lock:
                     success = led.set_led(color, speed)
-                    p_log("DEBUG", f"Set LED to color={color}, speed={speed}, success={success}")
             except Exception as e:
-                p_log("ERROR", f"[EliteLEDPlugin] Exception while setting LED: {e}")
+                p_log("ERROR", f"Exception while setting LED: {e}")
                 success = False
             if success:
                 evt = PluginEvent(
@@ -300,14 +289,11 @@ class EliteLEDPlugin(PluginBase):
 
     # --- Assistant reply policy ---
     def _should_reply_to_led_event(self, event: PluginEvent) -> bool:
-    # Uncomment the following line to let LED changes from game events also trigger replies
-    #    return True
-    #    try:
-    #        content = event.plugin_event_content or {}
-    #        return content.get("source", "game") == "manual"
-    #    except Exception:
-    #        return False
-        return False
+        try:
+            content = event.plugin_event_content or {}
+            return content.get("source", "game") == "manual"
+        except Exception:
+            return False
 
     def _generate_led_prompt(self, event: PluginEvent) -> str:
         try:
