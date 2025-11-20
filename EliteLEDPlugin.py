@@ -171,30 +171,24 @@ class EliteLEDPlugin(PluginBase):
         helper.register_status_generator(lambda states: [("Current LED state", states.get("CurrentLEDState", {}))])
 
         # Sideeffect: handle game/status events
+ 
         def sideeffect(event, states):
             try:
-                # Determina se l'evento è un StatusEvent o un altro tipo di evento
-                if hasattr(event, "kind") and event.kind == "status" and hasattr(event, "status"):
-                    # È un StatusEvent
-                    status_event = event.status.get("event") if isinstance(event.status, dict) else None
-                    self.handle_game_event(helper, status_event, states)
-                else:
-                    # È un altro tipo di evento
-                    self.handle_game_event(helper, event, states)
+                self.handle_game_event(helper, event, states)
             except Exception as e:
                 log("error", f"[EliteLEDPlugin] Sideeffect error: {e}")
 
         helper.register_sideeffect(sideeffect)
         p_log("INFO", "EliteLEDPlugin ready")
-        def on_chat_stop(self, helper: PluginHelper):
-            self._stop_workers = True
-            for t in list(self._worker_threads):
-                try:
-                    if t.is_alive():
-                        t.join(timeout=0.5)
-                except Exception:
-                    pass
-            p_log("INFO", "EliteLEDPlugin stopped")
+    def on_chat_stop(self, helper: PluginHelper):
+        self._stop_workers = True
+        for t in list(self._worker_threads):
+            try:
+                if t.is_alive():
+                    t.join(timeout=0.5)
+            except Exception:
+                pass
+        p_log("INFO", "EliteLEDPlugin stopped")
 
     # --- Actions ---
     def register_actions(self, helper: PluginHelper):
@@ -223,20 +217,19 @@ class EliteLEDPlugin(PluginBase):
         return f"LED update queued: color={color}, speed={speed}"
 
     # --- Handle game/status events ---
-    def handle_game_event(self, helper: PluginHelper, event, states: Dict[str, Dict]):
+    def handle_game_event(self, helper, event, states):
         if hasattr(event, "content") and isinstance(event.content, dict) and event.content.get("event") == "LEDChanged":
             return
     
         event_name = None
     
-        # Handle content attribute properly
-        content = getattr(event, "content", None)
-        if isinstance(content, dict):
-            event_name = content.get("event")
+        # Check if this is a status event with FuelScoopStarted/FuelScoopEnded
+        if hasattr(event, "status") and isinstance(event.status, dict) and "event" in event.status:
+            event_name = event.status["event"]
     
-        # If no event_name found yet, try status attribute
-        if not event_name and hasattr(event, "status") and isinstance(event.status, dict):
-            event_name = event.status.get("event")
+        # If not a status event, check if it's a regular game event
+        if not event_name and hasattr(event, "content") and isinstance(event.content, dict):
+            event_name = event.content.get("event")
     
         if not event_name:
             return
@@ -245,14 +238,15 @@ class EliteLEDPlugin(PluginBase):
     
         # Handle FuelScoopStarted / FuelScoopEnded
         if event_name in ("FuelScoopStarted", "FuelScoopEnded"):
-            p_log("DEBUG", f"[EliteLEDPlugin] Detected {event_name} event")
+            p_log("DEBUG", f"Detected {event_name} event")
             key = "FuelScoopStart" if event_name == "FuelScoopStarted" else "FuelScoopEnd"
         elif event_name == "FuelScoop":
-            p_log("DEBUG", "[EliteLEDPlugin] Processing FuelScoop event")
+            p_log("DEBUG", "Processing FuelScoop event")
+            content = getattr(event, "content", {})
             if isinstance(content, dict):
                 scooped = content.get("Scooped", 0)
                 key = "FuelScoopStart" if scooped > 0 else "FuelScoopEnd"
-                p_log("DEBUG", f"[EliteLEDPlugin] FuelScoop event detected, scooped={scooped}, key={key}")
+                p_log("DEBUG", f"FuelScoop event detected, scooped={scooped}, key={key}")
     
         if key in self._event_led_map:
             color, speed = self._event_led_map[key]
@@ -274,7 +268,7 @@ class EliteLEDPlugin(PluginBase):
                     success = led.set_led(color, speed)
                     p_log("DEBUG", f"Set LED to color={color}, speed={speed}, success={success}")
             except Exception as e:
-                p_log("ERROR", f"[EliteLEDPlugin] Exception while setting LED: {e}")
+                p_log("ERROR", f"Exception while setting LED: {e}")
                 success = False
             if success:
                 evt = PluginEvent(
