@@ -44,8 +44,8 @@ COLORS = {
     'orange_alert': 'orange_alert',
     'fsd_jump': 'fsd_jump',
     'breathing_yellow': 'breathing_yellow',
+    'breathing_bluegreen': 'breathing_bluegreen',
     'under attack': 'red_alert',
-    'NavRoute': 'white',
     'pink': (255, 192, 203),
     'magenta': (255, 0, 255),
     'lime': (0, 255, 0),
@@ -164,7 +164,7 @@ def set_led(color: str, speed: str = "normal") -> bool:
             d.set_colour(255, 255, 255)
             d.turn_on()
             return True
-        elif color in ['red_alert', 'orange_alert', 'fsd_jump', 'breathing_yellow']:
+        elif color in ['red_alert', 'orange_alert', 'fsd_jump', 'breathing_yellow', 'breathing_bluegreen']:
             d.set_mode('scene')
             time.sleep(0.2)
             spd = SPEEDS.get(speed, SPEEDS['normal'])
@@ -184,6 +184,10 @@ def set_led(color: str, speed: str = "normal") -> bool:
                 spd = SPEEDS.get(speed, SPEEDS['slow'])
 #                dps_value = f"c9{spd}0100d703e803e800000000{spd}01ffff66000000000000"
                 dps_value = f"07464602000003e803e800000000464602003703e803e800000000"
+                d.set_value(25, dps_value)
+            elif color == 'breathing_bluegreen':
+                spd = SPEEDS.get(speed, SPEEDS['slow'])
+                dps_value = f"065f5f0200bc03e803e8000000005f5f02007803e803e800000000"
                 d.set_value(25, dps_value)
 
             d.turn_on()
