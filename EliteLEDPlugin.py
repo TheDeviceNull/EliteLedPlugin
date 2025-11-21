@@ -2,7 +2,6 @@
 # Production-grade EliteLEDPlugin adapted to PluginHelper API
 # - Reads settings from self.settings.get(...)
 # - Dispatches PluginEvent with dict content
-# - set_led_color always returns a chat response (manual source)
 # - Game events only apply LED side-effect (source: "game") and do NOT cause assistant replies
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ from lib.Logger import log
 __version__ = "3.3.0-production"
 RELEASE_TITLE = "Signal Nexus — Production"
 
-PLUGIN_LOG_LEVEL = "INFO"
+PLUGIN_LOG_LEVEL = "DEBUG"
 _LEVELS = {"DEBUG": 10, "INFO": 20, "WARN": 30, "ERROR": 40}
 
 def p_log(level: str, *args):
@@ -108,6 +107,8 @@ class EliteLEDPlugin(PluginBase):
                         SelectSetting(key="Docked", label="Docked Color", type="select", default_value="white", select_options=self.color_options),
                         SelectSetting(key="FuelScoopStart", label="FuelScoopStart Color", type="select", default_value="breathing_yellow", select_options=self.color_options),
                         SelectSetting(key="FuelScoopEnd", label="FuelScoopEnd Color", type="select", default_value="white", select_options=self.color_options),
+                        SelectSetting(key="SupercruiseExit", label="Supercruise Exit Color", type="select", default_value="white", select_options=self.color_options),
+                        SelectSetting(key="PreferredColor", label="Preferred Color", type="select", default_value="white", select_options=self.color_options),
                     ]
                 )
             ]
@@ -149,7 +150,7 @@ class EliteLEDPlugin(PluginBase):
 
         # Build event->LED mapping
         self._event_led_map = {
-            "LoadGame": (self._get_setting("LoadGame", "white"), "normal"),
+            "LoadGame": (self._get_setting("PreferredColor", "white"), "normal"),
             "Shutdown": (self._get_setting("Shutdown", "white"), "normal"),
             "StartJump": (self._get_setting("StartJump", "fsd_jump"), "normal"),
             "DockingGranted": (self._get_setting("DockingGranted", "white"), "normal"),
@@ -158,6 +159,7 @@ class EliteLEDPlugin(PluginBase):
             "Docked": (self._get_setting("Docked", "white"), "normal"),
             "FuelScoopStart": (self._get_setting("FuelScoopStart", "breathing_yellow"), "normal"),
             "FuelScoopEnd": (self._get_setting("FuelScoopEnd", "white"), "normal"),
+            "SupercruiseExit": (self._get_setting("SupercruiseExit", "white"), "normal"),
         }
 
     # --- On chat start ---
@@ -247,6 +249,7 @@ class EliteLEDPlugin(PluginBase):
     
         if key in self._event_led_map:
             color, speed = self._event_led_map[key]
+            p_log("DEBUG", f"Applying LED for event {event_name}: color={color}, speed={speed}")
             self._apply_led(color, speed, helper, states, source="game")
 
     # --- Internal LED application ---
