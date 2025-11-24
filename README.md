@@ -4,8 +4,12 @@ A Covas:Next plugin to control Tuya-compatible LED strips based on Elite Dangero
 
 ## Installation
 
-1. Copy the entire plugin folder to the `plugins/` directory of Covas:Next.
+1. Copy the entire plugin folder to the `%APPDATA%/com.covas-next.ui/plugins/` directory of Covas:Next.
 2. Ensure the `deps/` folder contains `tinytuya` if not installed globally.
+You can install them using command, inside the plugin folder:
+
+`pip install -r requirements.txt --target=./deps --upgrade`
+
 3. Restart Covas:Next and enable the plugin via the Plugins UI.
 
 
