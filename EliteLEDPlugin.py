@@ -1,4 +1,4 @@
-# EliteLEDPlugin.py
+# EliteLEDPlugin.py -  3.3.0-production
 # Production-grade EliteLEDPlugin adapted to PluginHelper API
 # - Reads settings from self.settings.get(...)
 # - Dispatches PluginEvent with dict content
@@ -29,7 +29,7 @@ from lib.Logger import log
 __version__ = "3.3.0-production"
 RELEASE_TITLE = "Signal Nexus — Production"
 
-PLUGIN_LOG_LEVEL = "DEBUG"
+PLUGIN_LOG_LEVEL = "WARN"  # Options: DEBUG, INFO, WARN, ERROR
 _LEVELS = {"DEBUG": 10, "INFO": 20, "WARN": 30, "ERROR": 40}
 
 def p_log(level: str, *args):

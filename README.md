@@ -86,6 +86,13 @@ MIT License
 
 ## Changelog
 
+### v3.3.0 - Signal Nexus
+Release name: Signal Nexus
+
+Release link for v3.3.0:
+
+https://github.com/TheDeviceNull/EliteLedPlugin/releases/tag/v.3.3.0
+
 ### v2.0.1 — Event Reactor
 Release name: Event Reactor
 
