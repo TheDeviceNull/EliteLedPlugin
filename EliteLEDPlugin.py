@@ -1,3 +1,9 @@
+# EliteLEDPlugin.py - 4.0.0-production
+# Pydantic Ocelot — Production
+# Production-grade EliteLEDPlugin adapted to PluginHelper API with Pydantic models
+# - Uses Pydantic BaseModel for action parameters
+# - Commented out assistant replies to user events to avoid redundancy
+# -----------------------------------------------------------------------------------------------
 # EliteLEDPlugin.py -  3.3.0-production
 # Production-grade EliteLEDPlugin adapted to PluginHelper API
 # - Reads settings from self.settings.get(...)
@@ -9,12 +15,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import threading
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Literal
 from pathlib import Path
 import sys
+from pydantic.main import BaseModel
 
 sys.path.append(str(Path(__file__).parent / "deps"))
-import tinytuya
+
 from . import elite_led_controller as led
 
 from lib.PluginBase import PluginBase, PluginManifest
@@ -25,12 +32,17 @@ from lib.PluginSettingDefinitions import (
 from lib.Event import Event, ProjectedEvent, GameEvent, StatusEvent
 from lib.EventManager import Projection
 from lib.Logger import log
+from pydantic import BaseModel
 
-__version__ = "3.3.0-production"
-RELEASE_TITLE = "Signal Nexus — Production"
+
+__version__ = "4.0.0-production"
+RELEASE_TITLE = "Pydantic Ocelot — Production"
 
 PLUGIN_LOG_LEVEL = "WARN"  # Options: DEBUG, INFO, WARN, ERROR
 _LEVELS = {"DEBUG": 10, "INFO": 20, "WARN": 30, "ERROR": 40}
+
+color_options = list(led.COLORS.keys())
+speed_options = list(led.SPEEDS.keys())
 
 def p_log(level: str, *args):
     try:
@@ -43,6 +55,12 @@ def p_log(level: str, *args):
             log("ERROR", "[EliteLEDPlugin] logging failure")
         except Exception:
             pass
+
+# --- Classes for BaseModel definitions ---
+class SetLedColorParameters(BaseModel):
+    color: str
+    speed: str = "normal"
+
 
 # --- Projection for current LED state ---
 class CurrentLEDState(Projection[Dict[str, Any]]):
@@ -164,6 +182,7 @@ class EliteLEDPlugin(PluginBase):
 
     # --- On chat start ---
     def on_chat_start(self, helper: PluginHelper):
+        self._last_helper = helper
         self.on_plugin_helper_ready(helper)
         self.register_actions(helper)
         helper.register_projection(CurrentLEDState())
@@ -178,6 +197,12 @@ class EliteLEDPlugin(PluginBase):
                 log("error", f"[EliteLEDPlugin] Sideeffect error: {e}")
 
         helper.register_sideeffect(sideeffect)
+# --- No need to register event that triggers assistant replies --- It already replies to direct command, set_led_color
+#        helper.register_event(
+#            name="LEDChanged",
+#            should_reply_check=lambda event: self._should_reply_to_led_event(event),
+#            prompt_generator=lambda event: self._generate_led_prompt(event)
+#        )
         p_log("INFO", "EliteLEDPlugin ready")
     def on_chat_stop(self, helper: PluginHelper):
         self._stop_workers = True
@@ -192,18 +217,19 @@ class EliteLEDPlugin(PluginBase):
     # --- Actions ---
     def register_actions(self, helper: PluginHelper):
         helper.register_action(
-            "set_led_color",
-            "Set the LED strip to a color or scene",
-            {"type": "object", "properties": {"color": {"type": "string", "enum": list(led.COLORS.keys())},
-                                              "speed": {"type": "string", "enum": list(led.SPEEDS.keys())}},
-             "required": ["color"]},
-            lambda args, states: self.set_led(args, states, helper),
-            "global"
+            name="set_led_color",
+            description=f"Set the LED strip to a color or scene, Available colors: {', '.join(color_options)}",
+            parameters=SetLedColorParameters,  # Passa la classe del modello, non un'istanza
+            method=self.set_led_method,  # Nuovo metodo che accetta un modello Pydantic
+            action_type="global"  # Mantieni lo stesso action_type
         )
-
-    def set_led(self, args: Dict[str, Any], states: Dict[str, Dict], helper: PluginHelper) -> str:
-        color = args.get("color")
-        speed = args.get("speed", "normal")
+    
+    def set_led_method(self, model: SetLedColorParameters, context: dict) -> str:
+        # Estrai i parametri dal modello
+        color = model.color
+        speed = model.speed
+    
+        # Usa la logica esistente di set_led
         if not color:
             return "Missing color."
         try:
@@ -212,7 +238,13 @@ class EliteLEDPlugin(PluginBase):
                 return "LED device unreachable; check IP/configuration."
         except Exception:
             return "LED device unreachable; check IP/configuration."
-        self._apply_led(color, speed, helper, states, source="manual")
+    
+        # Ottieni helper dal contesto o usa quello passato
+        helper = context.get("helper", None)
+        if helper is None:
+            helper = self._last_helper  # Potresti voler memorizzare l'helper in una variabile di classe
+    
+        self._apply_led(color, speed, helper, context, source="manual")
         return f"LED update queued: color={color}, speed={speed}"
 
     # --- Handle game/status events ---
@@ -287,19 +319,19 @@ class EliteLEDPlugin(PluginBase):
         self._worker_threads.append(t)
 
     # --- Assistant reply policy ---
-    def _should_reply_to_led_event(self, event: PluginEvent) -> bool:
-        try:
-            content = event.plugin_event_content or {}
-            return content.get("source", "game") == "manual"
-        except Exception:
-            return False
-
-    def _generate_led_prompt(self, event: PluginEvent) -> str:
-        try:
-            content = event.plugin_event_content or {}
-            color = content.get("new_color", "unknown")
-            speed = content.get("speed", "normal")
-            ts = content.get("timestamp", "")
-            return f"NOTICE: LED updated to '{color}' (speed={speed}) at {ts}. Reply with a short acknowledgment."
-        except Exception:
-            return "NOTICE: LED updated. Reply with a short acknowledgment."
+#    def _should_reply_to_led_event(self, event: PluginEvent) -> bool:
+#        try:
+#            content = event.plugin_event_content or {}
+#            return content.get("source", "game") == "manual"
+#        except Exception:
+#            return False
+#
+#    def _generate_led_prompt(self, event: PluginEvent) -> str:
+#        try:
+#            content = event.plugin_event_content or {}
+#            color = content.get("new_color", "unknown")
+#            speed = content.get("speed", "normal")
+#            ts = content.get("timestamp", "")
+#            return f"NOTICE: LED updated to '{color}' (speed={speed}) at {ts}. Reply with a short acknowledgment."
+#        except Exception:
+#            return "NOTICE: LED updated. Reply with a short acknowledgment."
