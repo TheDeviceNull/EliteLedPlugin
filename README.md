@@ -90,6 +90,13 @@ MIT License
 
 ## Changelog
 
+### v4.0.0 - Pydantic Ocelot
+Release name: Pydantic Ocelot
+
+Release link for 4.0.0:
+
+https://github.com/TheDeviceNull/EliteLedPlugin/releases/tag/v.4.0.0
+
 ### v3.3.0 - Signal Nexus
 Release name: Signal Nexus
 
