@@ -1,3 +1,9 @@
+# EliteLEDPlugin.py - 4.0.1-production
+# Pydantic Ocelot — Production
+# Production-grade EliteLEDPlugin adapted to PluginHelper API with Pydantic models
+# - Modified class CurrentLEDState to follow pydantic conventions
+# - Ensured all BaseModel usages are consistent with Pydantic best practices
+# -----------------------------------------------------------------------------------------------
 # EliteLEDPlugin.py - 4.0.0-production
 # Pydantic Ocelot — Production
 # Production-grade EliteLEDPlugin adapted to PluginHelper API with Pydantic models
@@ -61,16 +67,23 @@ class SetLedColorParameters(BaseModel):
     color: str
     speed: str = "normal"
 
+class CurrentLEDStateModel(BaseModel):
+    event: str = "LEDState"
+    color: str = "off"
+    speed: str = "normal"
+    last_update: str | None = None
 
 # --- Projection for current LED state ---
-class CurrentLEDState(Projection[Dict[str, Any]]):
-    def get_default_state(self) -> Dict[str, Any]:
-        return {
-            "event": "LEDState",
-            "color": "off",
-            "speed": "normal",
-            "last_update": None
-        }
+class CurrentLEDState(Projection[CurrentLEDStateModel]):
+    StateModel = CurrentLEDStateModel
+
+    def get_default_state(self) -> CurrentLEDStateModel:
+        return CurrentLEDStateModel(
+            event="LEDState",
+            color="off",
+            speed="normal",
+            last_update=None
+        )
 
     def process(self, event: Event) -> list[ProjectedEvent]:
         if isinstance(event, PluginEvent) and getattr(event, "plugin_event_name", "") == "LEDChanged":
@@ -78,7 +91,12 @@ class CurrentLEDState(Projection[Dict[str, Any]]):
             new_color = data.get("new_color", "off")
             speed = data.get("speed", "normal")
             ts = data.get("timestamp", datetime.now(timezone.utc).isoformat())
-            self.state.update({"color": new_color, "speed": speed, "last_update": ts})
+            self.state = self.StateModel(
+                event=self.state.event,
+                color=new_color,
+                speed=speed,
+                last_update=ts
+            )
         return []  # No need to create additional projected events
 
 # --- Main Plugin ---
