@@ -1,3 +1,5 @@
+# EliteLEDPlugin.py - 4.0.2-production
+# Changed how LED status is created for LLM status generator: now it uses a helper method to convert the Pydantic model into a human-readable description, instead of showing the raw model data. This makes the status more understandable for users and LLMs alike.
 # EliteLEDPlugin.py - 4.0.1-production
 # Pydantic Ocelot — Production
 # Production-grade EliteLEDPlugin adapted to PluginHelper API with Pydantic models
@@ -152,6 +154,19 @@ class EliteLEDPlugin(PluginBase):
 
         self._event_led_map: Dict[str, Tuple[str, str]] = {}
 
+    # --- Utility to convert LED state to description for LLM ---
+    def _get_led_status_description(self, states) -> str:
+        """Trasforma il modello Pydantic in una descrizione testuale per l'LLM."""
+        state = states.get("CurrentLEDState")
+    
+        # Se lo stato non esiste o è un dizionario vuoto (non ancora inizializzato)
+        if not state or isinstance(state, dict):
+            return "LED Controller is currently off or not initialized."
+    
+        # Poiché 'state' è un'istanza di CurrentLEDStateModel [1, 2]
+        # restituiamo una stringa chiara invece dell'oggetto grezzo
+        return f"The LED strip is currently {state.color} (speed: {state.speed})."
+    
     # --- Utility to read settings ---
     def _get_setting(self, key: str, default: Any = None) -> Any:
         try:
@@ -204,8 +219,8 @@ class EliteLEDPlugin(PluginBase):
         self.on_plugin_helper_ready(helper)
         self.register_actions(helper)
         helper.register_projection(CurrentLEDState())
-        helper.register_status_generator(lambda states: [("Current LED state", states.get("CurrentLEDState", {}))])
-
+    #    helper.register_status_generator(lambda states: [("Current LED state", states.get("CurrentLEDState", {}))])
+        helper.register_status_generator(lambda states: [("Current LED status", self._get_led_status_description(states))])
         # Sideeffect: handle game/status events
  
         def sideeffect(event, states):
